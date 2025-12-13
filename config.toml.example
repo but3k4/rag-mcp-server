@@ -1,0 +1,82 @@
+# RAG server configuration.
+# Copy to config.toml and edit the paths for your machine.
+# Paths are expanded (~ is supported). No code changes needed.
+
+[indexing]
+source_dirs = [
+    "~/Documents/notes",
+    "~/Documents/work",
+]
+
+# Maximum characters per chunk when splitting large documents.
+chunk_size = 1000
+
+# Number of characters to overlap between consecutive chunks.
+chunk_overlap = 100
+
+# Files larger than this (in bytes) are skipped during indexing with a
+# warning, counted in files_failed. Prevents a single huge document from
+# OOM-ing the server. 50 MiB default.
+max_file_size_bytes = 52428800
+
+# How long to wait (in seconds) after a file change before re-indexing.
+# Editor saves often fire multiple create/modify events within
+# milliseconds. This coalesces them into a single re-index. Set to 0 to
+# disable debouncing and fire on every event.
+watcher_debounce_seconds = 0.5
+
+[retrieval]
+# Number of results returned by search_docs. Higher values give the LLM
+# more context but can dilute relevance.
+top_k = 5
+
+# Candidate pool multiplier for hybrid fusion. search() fetches
+# top_k * fetch_n_multiplier candidates from each of semantic and BM25
+# before merging with Reciprocal Rank Fusion. 2–6 is typical.
+fetch_n_multiplier = 4
+
+# RRF K parameter. Higher values flatten the ranking curve, so the
+# difference between rank 1 and rank 10 shrinks. 60 is the standard
+# starting point from the original RRF paper.
+rrf_k = 60
+
+# SentenceTransformer model identifier. Changing this triggers a full
+# reindex on next startup. If you switch models, update query_prefix
+# below to match the new model's convention.
+embedder_model = "BAAI/bge-base-en-v1.5"
+
+# String prepended to every search query before embedding. BGE v1.5
+# expects this specific phrase. E5 uses "query: ". GTE and most
+# general-purpose models expect an empty string.
+query_prefix = "Represent this sentence for searching relevant passages: "
+
+# Cross-encoder reranker. When enabled, the top reranker_pool_size
+# deduplicated parent sections from hybrid fusion are re-scored by a
+# cross-encoder and the final result is truncated to top_k. Usually
+# improves precision at the cost of ~50-200 ms per query. First use
+# downloads the model (~280 MB for bge-reranker-base).
+reranker_enabled = false
+
+# CrossEncoder identifier. bge-reranker-base is the compact default;
+# bge-reranker-v2-m3 is multilingual but much larger.
+reranker_model = "BAAI/bge-reranker-base"
+
+# How many deduplicated parent sections to rerank. Must be >= top_k.
+# Bigger values give the reranker more candidates to work with at the
+# cost of more cross-encoder inferences per query.
+reranker_pool_size = 20
+
+# Maximum length of a search query string (in characters). Queries over
+# this limit are rejected with an error before hitting the embedder.
+max_query_length = 1000
+
+[security]
+# Allow-list for the add_directory MCP tool. When empty, any resolvable
+# path is accepted (matches pre-allow-list behaviour). When populated,
+# add_directory rejects any path that is not at or under one of these
+# bases, preventing clients from indexing arbitrary filesystem locations
+# like /etc or another user's home directory.
+# allowed_base_dirs = [
+#     "~/Documents",
+#     "/data/shared",
+# ]

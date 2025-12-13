@@ -1,0 +1,87 @@
+# Standard ruff configuration template.
+# Usage:
+#   - Standalone: copy this file to the project root as ruff.toml
+#   - pyproject.toml: copy each section, prefixing [tool.ruff] (e.g. [lint] -> [tool.ruff.lint])
+
+line-length = 88
+
+[lint]
+select = [
+  "E", "W",        # pycodestyle
+  "F",             # pyflakes
+  "I",             # isort
+  "UP",            # pyupgrade
+  "B",             # flake8-bugbear
+  "SIM",           # flake8-simplify
+  "ANN",           # flake8-annotations
+  "D",             # pydocstyle
+  "C90",           # mccabe complexity
+  "ASYNC",         # flake8-async
+  "BLE",           # flake8-blind-except
+  "DTZ",           # flake8-datetimez
+  "FLY",           # flynt
+  "FURB",          # refurb
+  "G",             # flake8-logging-format
+  "ISC",           # flake8-implicit-str-concat
+  "LOG",           # flake8-logging
+  "N804", "N805",  # cls/self naming
+  "PERF",          # perflint
+  "PGH",           # pygrep-hooks
+  "PIE",           # flake8-pie
+  "PLC", "PLE", "PLR", "PLW",  # pylint
+  "PT",            # flake8-pytest-style
+  "PTH",           # flake8-pathlib
+  "RET",           # flake8-return
+  "RUF",           # ruff-specific rules
+  "SLF",           # flake8-self
+  "TC",            # flake8-type-checking
+  "TRY",           # tryceratops
+  "T20",           # flake8-print
+]
+ignore = [
+  # Formatter conflicts: https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+  "W191", "E111", "E114", "E117", "D206", "D300", "COM812", "COM819",
+
+  # Google docstring convention
+  "D203",   # conflicts with D211 (no blank line before class docstring)
+  "D212",   # conflicts with D213 (summary on second line, opening """ alone)
+  "D406",   # section names don't end with newline in Google style
+  "D407",   # no underlines in Google style
+  "D417",   # allow documenting only non-obvious parameters
+
+  # Line length: handled by the formatter
+  "E501",
+
+  # Pylint thresholds: arbitrary, override per project if needed
+  "PLR0911", "PLR0912", "PLR0913", "PLR0915",
+
+  # Noisy / false positives
+  "PLC1901",          # empty-string falsey. Too many false positives
+  "TRY003",           # short inline raise messages are fine
+  "RUF001", "RUF002", "RUF003",  # ambiguous unicode. Noisy for non-ASCII content
+  "SIM102",           # nested if. Guard clauses are often clearer
+  "SIM108",           # ternary operator. Can reduce readability
+
+  # Blank line after docstring required by project convention
+  "D202",
+]
+
+[lint.isort]
+force-sort-within-sections = true
+combine-as-imports = true
+
+[lint.mccabe]
+max-complexity = 25
+
+[lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.per-file-ignores]
+# Tests routinely access private members to exercise internal state.
+"tests/**" = ["SLF001"]
+# Scripts print to stdout by design.
+"scripts/**" = ["T201"]
