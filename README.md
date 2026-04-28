@@ -1,23 +1,33 @@
 # RAG Server
 
-A local MCP server that indexes documents from configured directories and exposes semantic search to Claude Code, Claude Desktop, Cursor and VSCode. Works fully offline, no external API calls.
+A local-first MCP server that indexes documents from configured directories and exposes semantic search to Claude Code, Claude Desktop, Cursor, and VSCode. Runs fully offline, with no external API calls.
+
+## Background
+
+I've been running this locally for some time and found it useful in day-to-day engineering workflows, so I decided to share it.
 
 ## What it does
 
-Six MCP tools are available once the server is running:
+Once the server is running, six MCP tools are available:
 
-- **search_docs(query)**: hybrid search combining BGE semantic similarity and BM25 keyword matching via Reciprocal Rank Fusion. Returns the top 5 most relevant section excerpts, each with source filename, section title, and score.
-- **reindex()**: incremental re-index on demand. Only processes files whose SHA-256 hash has changed, and prunes index entries for files that were renamed or deleted since the last run. Returns a summary of scanned, updated, failed, and pruned files.
-- **list_indexed_files()**: lists all currently indexed file paths.
-- **add_directory(path)**: register a new directory at runtime and index its contents. Persisted across restarts.
-- **remove_directory(path)**: unregister a directory and delete its index entries.
-- **get_status()**: show configured directories, last-indexed timestamps, and total file count.
+- **search_docs(query)**: Hybrid search combining BGE semantic similarity and BM25 keyword matching via Reciprocal Rank Fusion. Returns the top 5 most relevant section excerpts, including source filename, section title, and score.
+- **reindex()**: Incremental re-index on demand. Only processes files whose SHA-256 hash has changed, and prunes entries for files that were renamed or deleted. Returns a summary of scanned, updated, failed, and pruned files.
+- **list_indexed_files()**: Lists all currently indexed file paths.
+- **add_directory(path)**: Registers a new directory at runtime and indexes its contents. Persisted across restarts.
+- **remove_directory(path)**: Unregisters a directory and removes its indexed data.
+- **get_status()**: Shows configured directories, last indexed timestamps, and total file count.
 
 Supported file types: `.txt`, `.md`, `.pdf`, `.docx`, `.pptx`, `.csv`, `.xlsx`, `.xml`
 
+## Why I built this
+
+I built this project to explore how AI can be integrated into real engineering workflows beyond simple prompt usage, using a local-first approach.
+
 ## Architecture
 
-Documents are parsed into section-aware chunks and indexed with a parent-child layout. Small overlapping chunks (children) are embedded with BGE and stored in ChromaDB. Their parent sections (full section text) plus all other non-vector state live in a sidecar SQLite database. The Chroma index is a rebuildable cache over the canonical data in SQLite. A file watcher keeps both in sync with the filesystem. SHA-256 hashes drive incremental reindexing.
+Documents are parsed into section-aware chunks and indexed using a parent-child layout. Small overlapping chunks (children) are embedded with BGE and stored in ChromaDB. Parent sections (full section text) and all other non-vector state are stored in a sidecar SQLite database.
+
+The Chroma index acts as a rebuildable cache over the canonical data stored in SQLite. A file watcher keeps both in sync with the filesystem. SHA-256 hashes drive incremental reindexing.
 
 ```
                    +------------------+
@@ -50,28 +60,28 @@ Documents are parsed into section-aware chunks and indexed with a parent-child l
                                                          top-k
 ```
 
-SQLite is the source of truth. The vector index can be rebuilt from SQLite without re-parsing the source files (via stored parent text), which unblocks embedding-model swaps and future schema migrations.
+SQLite is the source of truth. The vector index can be rebuilt from SQLite without re-parsing source files, enabling embedding model swaps and future schema migrations.
 
 ## Install
 
 ```sh
-# 1. Clone or copy this project, then enter the directory.
+# Clone or copy this project and enter the directory
 cd rag-server
 
-# 2. Install dependencies from pyproject.toml (creates .venv).
+# Install dependencies from pyproject.toml (creates .venv).
 uv sync
 ```
 
-The first time the server starts it will download the `BAAI/bge-base-en-v1.5` embedding model (~440 MB) from HuggingFace and cache it locally. If you enable the optional reranker, the first query also downloads `BAAI/bge-reranker-base` (~280 MB). After that, everything runs offline.
+On first startup, the server downloads the `BAAI/bge-base-en-v1.5` embedding model (~440 MB) from HuggingFace and caches it locally. If the optional reranker is enabled, the first query will also download `BAAI/bge-reranker-base` (~280 MB). After that, everything runs offline.
 
 ## Configure
 
-Two ways to configure, in order of precedence:
+Two configuration sources, in order of precedence:
 
-1. **Environment variables** (override everything below)
+1. **Environment variables** (override everything)
 2. **`config.toml`** at the project root
 
-Copy the template and edit paths for your machine:
+Copy the template and edit paths:
 
 ```sh
 cp config.toml.example config.toml
@@ -113,7 +123,7 @@ max_query_length = 1000
 # allowed_base_dirs = [ "~/Documents", "/data/shared" ]
 ```
 
-Invalid values are rejected at startup with a clear `ConfigError` message. The server exits 1 rather than limping along with bad config.
+Invalid values are rejected at startup with a clear `ConfigError`. The server exits instead of running with invalid configuration.
 
 ### Environment variables
 
@@ -121,11 +131,13 @@ Invalid values are rejected at startup with a clear `ConfigError` message. The s
 
 | Variable         | Default                 | Description                                                       |
 |------------------|-------------------------|-------------------------------------------------------------------|
-| `TRANSPORT`      | `stdio`                 | `stdio`, `sse`, or `streamable-http`                              |
+| `TRANSPORT`      | `stdio`                 | `stdio`, `sse`, or `streamable-http`. See note below.             |
 | `PORT`           | `8765`                  | TCP port for HTTP transports                                      |
 | `RAG_DATA_DIR`   | `<project>/.rag-data`   | Where Chroma and `metadata.db` (SQLite) persist                   |
 | `RAG_CONFIG`     | `<project>/config.toml` | Alternate config file path                                        |
 | `RAG_SOURCE_DIRS`| *(unset)*               | Colon-separated paths. Overrides `[indexing].source_dirs`         |
+
+**Transport note**: `streamable-http` is the most capable transport and is recommended when you have a reverse proxy (nginx, Caddy, Traefik) terminating SSL. Claude Code and Claude Desktop require HTTPS for remote `streamable-http` endpoints, so plain HTTP only works on localhost. `sse` is simpler to get running without SSL. The Docker image defaults to it for this reason. `stdio` is the right choice for local installs launched directly by a client.
 
 **Indexing**
 
@@ -215,9 +227,17 @@ The `add_directory` tool rejects any path that is not at or under one of those b
 
 ```sh
 uv run rag-server
+
+# or
+
+TRANSPORT=sse uv run rag-server
+
+# or
+
+TRANSPORT=streamable-http uv run rag-server
 ```
 
-The server indexes on startup (incremental. Only changed files) and then stays running as an MCP server process. Default transport is stdio. The index and vector store persist in `.rag-data/` inside the project root.
+The server performs an incremental index on startup (only changed files) and then runs as an MCP server process. Default transport is stdio. Data is persisted under `.rag-data/`.
 
 ## Run with Docker or Podman
 
@@ -225,14 +245,16 @@ Build the image once:
 
 ```sh
 docker build -t rag-server .
+
 # or
+
 podman build -t rag-server .
 ```
 
 The image:
 - Runs as a non-root user (`uid=1000`).
 - Pre-bakes the BGE embedder, so the first search doesn't pay the ~440 MB download on cold start. The reranker stays opt-in and downloads on first use when `RAG_RERANKER_ENABLED=true`.
-- Ships a `HEALTHCHECK` that hits `/sse`. Meaningful when `TRANSPORT=sse` (the default in the image). Disable or override for `TRANSPORT=stdio`.
+- Ships a `HEALTHCHECK` that hits `:8766/healthz` on the sidecar health server (`RAG_HEALTH_PORT=8766`).
 - Handles `SIGTERM` for clean shutdowns when an orchestrator stops it.
 
 Three volumes matter:
