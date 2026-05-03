@@ -43,10 +43,15 @@ DEFAULT_CHUNK_OVERLAP = 150
 DEFAULT_TOP_K = 5
 DEFAULT_FETCH_N_MULTIPLIER = 4
 DEFAULT_RRF_K = 60
-DEFAULT_EMBEDDER_MODEL = "BAAI/bge-base-en-v1.5"
-DEFAULT_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+DEFAULT_EMBEDDER_MODEL = "sentence-transformers/all-mpnet-base-v2"
+DEFAULT_QUERY_PREFIX = ""
 DEFAULT_RERANKER_ENABLED = False
-DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-base"
+DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+# If you prefer BAAI/BGE models, override all three together via env vars or config.toml.
+# The query prefix is part of the BGE embedding convention and must change with the model:
+#   RAG_EMBEDDER_MODEL  = "BAAI/bge-base-en-v1.5"
+#   RAG_QUERY_PREFIX    = "Represent this sentence for searching relevant passages: "
+#   RAG_RERANKER_MODEL  = "BAAI/bge-reranker-base"
 DEFAULT_RERANKER_POOL_SIZE = 20
 DEFAULT_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MiB
 DEFAULT_MAX_QUERY_LENGTH = 1000

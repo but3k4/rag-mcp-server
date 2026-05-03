@@ -32,14 +32,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-# Defaults match BGE v1.5 conventions. Callers that construct a VectorStore
-# without overrides (e.g. most tests) get these values.
-DEFAULT_MODEL_NAME = "BAAI/bge-base-en-v1.5"
-DEFAULT_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+DEFAULT_MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
+DEFAULT_QUERY_PREFIX = ""
 DEFAULT_FETCH_N_MULTIPLIER = 4
 DEFAULT_RRF_K = 60
 DEFAULT_RERANKER_ENABLED = False
-DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-base"
+DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+# BGE alternative. Change all three together. See config.py and README for details.
 DEFAULT_RERANKER_POOL_SIZE = 20
 
 

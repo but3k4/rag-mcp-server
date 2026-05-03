@@ -10,7 +10,7 @@ I've been running this locally for some time and found it useful in day-to-day e
 
 Once the server is running, six MCP tools are available:
 
-- **search_docs(query)**: Hybrid search combining BGE semantic similarity and BM25 keyword matching via Reciprocal Rank Fusion. Returns the top 5 most relevant section excerpts, including source filename, section title, and score.
+- **search_docs(query)**: Hybrid search combining dense semantic similarity and BM25 keyword matching via Reciprocal Rank Fusion. Returns the top 5 most relevant section excerpts, including source filename, section title, and score.
 - **reindex()**: Incremental re-index on demand. Only processes files whose SHA-256 hash has changed, and prunes entries for files that were renamed or deleted. Returns a summary of scanned, updated, failed, and pruned files.
 - **list_indexed_files()**: Lists all currently indexed file paths.
 - **add_directory(path)**: Registers a new directory at runtime and indexes its contents. Persisted across restarts.
@@ -25,7 +25,7 @@ I built this project to explore how AI can be integrated into real engineering w
 
 ## Architecture
 
-Documents are parsed into section-aware chunks and indexed using a parent-child layout. Small overlapping chunks (children) are embedded with BGE and stored in ChromaDB. Parent sections (full section text) and all other non-vector state are stored in a sidecar SQLite database.
+Documents are parsed into section-aware chunks and indexed using a parent-child layout. Small overlapping chunks (children) are embedded and stored in ChromaDB. Parent sections (full section text) and all other non-vector state are stored in a sidecar SQLite database.
 
 The Chroma index acts as a rebuildable cache over the canonical data stored in SQLite. A file watcher keeps both in sync with the filesystem. SHA-256 hashes drive incremental reindexing.
 
@@ -40,7 +40,7 @@ The Chroma index acts as a rebuildable cache over the canonical data stored in S
   | ChromaDB               |  | MetadataDB (SQLite, WAL)   |
   |                        |  |                            |
   |   docs   child chunks  |  |   kv          schema_ver,  |
-  |          + BGE embeds  |  |               model name   |
+  |          + embeddings  |  |               model name   |
   |                        |  |   file_hashes path -> sha  |
   |   (cosine)             |  |   parents     id, source,  |
   |                        |  |               section,     |
@@ -49,7 +49,7 @@ The Chroma index acts as a rebuildable cache over the canonical data stored in S
                               |
                               | search
                               |
-     query --> BGE semantic --+
+     query --> dense semantic -+
                               |-- Reciprocal Rank Fusion --+
      query --> BM25 keyword --+                            |
                                                            |
@@ -72,7 +72,7 @@ cd rag-server
 uv sync
 ```
 
-On first startup, the server downloads the `BAAI/bge-base-en-v1.5` embedding model (~440 MB) from HuggingFace and caches it locally. If the optional reranker is enabled, the first query will also download `BAAI/bge-reranker-base` (~280 MB). After that, everything runs offline.
+On first startup, the server downloads the `sentence-transformers/all-mpnet-base-v2` embedding model (~420 MB) from HuggingFace and caches it locally. If the optional reranker is enabled, the first query will also download `cross-encoder/ms-marco-MiniLM-L-12-v2` (~140 MB). After that, everything runs offline.
 
 ## Configure
 
@@ -112,10 +112,10 @@ watcher_debounce_seconds = 0.5
 top_k = 5
 fetch_n_multiplier = 4
 rrf_k = 60
-embedder_model = "BAAI/bge-base-en-v1.5"
-query_prefix = "Represent this sentence for searching relevant passages: "
+embedder_model = "sentence-transformers/all-mpnet-base-v2"
+query_prefix = ""
 reranker_enabled = false
-reranker_model = "BAAI/bge-reranker-base"
+reranker_model = "cross-encoder/ms-marco-MiniLM-L-12-v2"
 reranker_pool_size = 20
 max_query_length = 1000
 
@@ -156,10 +156,10 @@ Invalid values are rejected at startup with a clear `ConfigError`. The server ex
 | `RAG_TOP_K`               | `5`                                                              | Number of results returned by `search_docs`                          |
 | `RAG_FETCH_N_MULTIPLIER`  | `4`                                                              | Candidate pool multiplier for RRF (`top_k * multiplier` per side)    |
 | `RAG_RRF_K`               | `60`                                                             | RRF K parameter. Higher flattens the ranking curve                   |
-| `RAG_EMBEDDER_MODEL`      | `BAAI/bge-base-en-v1.5`                                          | SentenceTransformer identifier. Changing this triggers a full reindex |
-| `RAG_QUERY_PREFIX`        | `"Represent this sentence for searching relevant passages: "`   | Prefix prepended to queries before embedding. Must match the embedder's convention |
+| `RAG_EMBEDDER_MODEL`      | `sentence-transformers/all-mpnet-base-v2`                        | SentenceTransformer identifier. Changing this triggers a full reindex |
+| `RAG_QUERY_PREFIX`        | `""`                                                             | Prefix prepended to queries before embedding. Must match the embedder's convention |
 | `RAG_RERANKER_ENABLED`    | `false`                                                          | Enable cross-encoder reranking after RRF                             |
-| `RAG_RERANKER_MODEL`      | `BAAI/bge-reranker-base`                                         | CrossEncoder identifier when reranking is on                         |
+| `RAG_RERANKER_MODEL`      | `cross-encoder/ms-marco-MiniLM-L-12-v2`                         | CrossEncoder identifier when reranking is on                         |
 | `RAG_RERANKER_POOL_SIZE`  | `20`                                                             | How many deduped parents to rerank. Must be `>= top_k`               |
 | `RAG_MAX_QUERY_LENGTH`    | `1000`                                                           | Reject `search_docs` queries longer than this                        |
 
@@ -190,7 +190,31 @@ Enable a cross-encoder reranker to re-score the top RRF candidates before return
 RAG_RERANKER_ENABLED=true uv run rag-server
 ```
 
-The first search after enabling downloads `bge-reranker-base` (~280 MB) and loads it in the embedder's thread pool. Subsequent queries add ~50–200 ms of cross-encoder inference each but noticeably improve precision on ambiguous or short queries. The `score` field in results becomes the cross-encoder logit (0–1 range on typical inputs) instead of the RRF fusion score. Ordering semantics are the same, magnitudes are not comparable across modes.
+The first search after enabling downloads `ms-marco-MiniLM-L-12-v2` (~140 MB) and loads it in the embedder's thread pool. Subsequent queries add ~50–200 ms of cross-encoder inference each but noticeably improve precision on ambiguous or short queries. The `score` field in results becomes the cross-encoder logit (0–1 range on typical inputs) instead of the RRF fusion score. Ordering semantics are the same, magnitudes are not comparable across modes.
+
+### Choosing an embedding model
+
+The defaults use models that are not affiliated with any government-linked research institution. If your organization has a policy against models originating from Chinese institutions, the defaults are the right choice and no extra configuration is needed.
+
+If you prefer the BAAI/BGE models (from the Beijing Academy of Artificial Intelligence), you can switch by setting all three variables together. The query prefix is part of the BGE embedding convention and must be changed along with the model name. Mixing them produces poor results:
+
+```sh
+RAG_EMBEDDER_MODEL="BAAI/bge-base-en-v1.5" \
+RAG_QUERY_PREFIX="Represent this sentence for searching relevant passages: " \
+RAG_RERANKER_MODEL="BAAI/bge-reranker-base" \
+uv run rag-server
+```
+
+Or in `config.toml`:
+
+```toml
+[retrieval]
+embedder_model = "BAAI/bge-base-en-v1.5"
+query_prefix = "Represent this sentence for searching relevant passages: "
+reranker_model = "BAAI/bge-reranker-base"
+```
+
+Changing `embedder_model` triggers a full reindex on the next startup. The BGE embedder downloads ~440 MB on first use. The BGE reranker adds ~280 MB if enabled.
 
 ### Logging and shutdown
 
@@ -253,14 +277,14 @@ podman build -t rag-server .
 
 The image:
 - Runs as a non-root user (`uid=1000`).
-- Pre-bakes the BGE embedder, so the first search doesn't pay the ~440 MB download on cold start. The reranker stays opt-in and downloads on first use when `RAG_RERANKER_ENABLED=true`.
+- Pre-bakes the embedder, so the first search doesn't pay the ~420 MB download on cold start. The reranker stays opt-in and downloads on first use when `RAG_RERANKER_ENABLED=true`.
 - Ships a `HEALTHCHECK` that hits `:8766/healthz` on the sidecar health server (`RAG_HEALTH_PORT=8766`).
 - Handles `SIGTERM` for clean shutdowns when an orchestrator stops it.
 
 Three volumes matter:
 
 - **`/data`**: Chroma DB, `metadata.db` (SQLite), and `runtime_state.json`. Persist this or lose the index on every restart.
-- **`/models`**: HuggingFace cache (`HF_HOME`). The base image already contains the BGE model. Persisting this volume avoids re-downloading the reranker (if enabled) on every restart.
+- **`/models`**: HuggingFace cache (`HF_HOME`). The base image already contains the embedder. Persisting this volume avoids re-downloading the reranker (if enabled) on every restart.
 - **`/sources/...`**: bind mounts for the documents you want indexed. Mount paths must match whatever you pass in `RAG_SOURCE_DIRS`.
 
 ### Persistent SSE server (recommended for containers)
