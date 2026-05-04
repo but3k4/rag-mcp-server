@@ -29,6 +29,7 @@ ENV TRANSPORT=sse \
     RAG_LOG_FORMAT=json \
     RAG_DATA_DIR=/data \
     HF_HOME=/models \
+    HF_HUB_OFFLINE=1 \
     RAG_WATCHER=poll \
     RAG_HEALTH_PORT=8766
 

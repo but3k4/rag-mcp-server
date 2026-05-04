@@ -49,7 +49,7 @@ The Chroma index acts as a rebuildable cache over the canonical data stored in S
                               |
                               | search
                               |
-     query --> dense semantic -+
+    query --> dense semantic -+
                               |-- Reciprocal Rank Fusion --+
      query --> BM25 keyword --+                            |
                                                            |
@@ -192,6 +192,22 @@ RAG_RERANKER_ENABLED=true uv run rag-server
 
 The first search after enabling downloads `ms-marco-MiniLM-L-12-v2` (~140 MB) and loads it in the embedder's thread pool. Subsequent queries add ~50–200 ms of cross-encoder inference each but noticeably improve precision on ambiguous or short queries. The `score` field in results becomes the cross-encoder logit (0–1 range on typical inputs) instead of the RRF fusion score. Ordering semantics are the same, magnitudes are not comparable across modes.
 
+### Offline mode
+
+`sentence-transformers` validates the cached model against the HuggingFace Hub on every load, which means the server still makes a network call on startup even though the model files are local. Set `HF_HUB_OFFLINE=1` to skip that call and load straight from the cache:
+
+```sh
+HF_HUB_OFFLINE=1 uv run rag-server
+```
+
+The Docker image sets `HF_HUB_OFFLINE=1` by default because the embedder is pre-baked into the image. If you turn the reranker on for the first time inside the container, the download will fail with the default offline setting. Override it on the first launch only:
+
+```sh
+docker run -e HF_HUB_OFFLINE=0 -e RAG_RERANKER_ENABLED=true ...
+```
+
+Once the reranker is cached on the `/models` volume, drop the override on subsequent runs.
+
 ### Choosing an embedding model
 
 The defaults use models that are not affiliated with any government-linked research institution. If your organization has a policy against models originating from Chinese institutions, the defaults are the right choice and no extra configuration is needed.
@@ -277,7 +293,7 @@ podman build -t rag-server .
 
 The image:
 - Runs as a non-root user (`uid=1000`).
-- Pre-bakes the embedder, so the first search doesn't pay the ~420 MB download on cold start. The reranker stays opt-in and downloads on first use when `RAG_RERANKER_ENABLED=true`.
+- Pre-bakes the embedder, so the first search doesn't pay the ~420 MB download on cold start. The reranker stays opt-in. Because the image runs with `HF_HUB_OFFLINE=1`, the first reranker run needs `HF_HUB_OFFLINE=0` to fetch the model. See [Offline mode](#offline-mode).
 - Ships a `HEALTHCHECK` that hits `:8766/healthz` on the sidecar health server (`RAG_HEALTH_PORT=8766`).
 - Handles `SIGTERM` for clean shutdowns when an orchestrator stops it.
 
@@ -384,6 +400,39 @@ claude mcp add --transport sse rag http://<host>:8765/sse
 ```sh
 uv run pytest -v tests --cov
 ```
+
+## Evaluate retrieval quality
+
+The `rag-eval` CLI runs a labeled query set against your indexed corpus and reports recall@k and mean reciprocal rank. Use it to compare config changes (chunk size, embedder swap, reranker on/off) on a representative dataset rather than eyeballing search output.
+
+The dataset is a JSON array of `{query, relevant}` pairs:
+
+```json
+[
+  {"query": "how do I add an item to a python list", "relevant": ["corpus/python_basics.md"]},
+  {"query": "how to merge two git branches", "relevant": ["corpus/git_basics.md"]}
+]
+```
+
+Relative `relevant` paths resolve against the dataset file's directory.
+
+A small sample lives under `eval/`. To smoke-test the harness against it:
+
+```sh
+RAG_SOURCE_DIRS=$PWD/eval/corpus uv run rag-server &
+sleep 5  # let it index, then stop with Ctrl-C
+uv run rag-eval --dataset eval/dataset.json --per-query
+```
+
+For an A/B comparison, point each run at its own indexed data dir:
+
+```sh
+RAG_DATA_DIR=/tmp/rag-a RAG_RERANKER_ENABLED=false uv run rag-eval --dataset eval/dataset.json > a.json
+RAG_DATA_DIR=/tmp/rag-b RAG_RERANKER_ENABLED=true  uv run rag-eval --dataset eval/dataset.json > b.json
+diff <(jq . a.json) <(jq . b.json)
+```
+
+Each data dir must already be indexed against its respective config.
 
 ## Lint and type-check
 
