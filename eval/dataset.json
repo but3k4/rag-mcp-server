@@ -1,0 +1,22 @@
+[
+  {
+    "query": "how do I add an item to a python list",
+    "relevant": ["corpus/python_basics.md"]
+  },
+  {
+    "query": "how to merge two git branches",
+    "relevant": ["corpus/git_basics.md"]
+  },
+  {
+    "query": "what is a docker image",
+    "relevant": ["corpus/docker_intro.md"]
+  },
+  {
+    "query": "how to undo a published git commit safely",
+    "relevant": ["corpus/git_basics.md"]
+  },
+  {
+    "query": "how do containers persist data across restarts",
+    "relevant": ["corpus/docker_intro.md"]
+  }
+]

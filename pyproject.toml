@@ -44,6 +44,7 @@ dev = [
 
 [project.scripts]
 rag-server = "rag.server:main"
+rag-eval = "rag.eval:main"
 
 [build-system]
 requires = ["hatchling"]
