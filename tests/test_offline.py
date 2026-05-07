@@ -55,18 +55,13 @@ def block_outbound_tcp(monkeypatch: pytest.MonkeyPatch) -> None:
     real_connect = socket.socket.connect
 
     def _checked_connect(
-        self: socket.socket,
-        address: object,
-        *args: object,
-        **kwargs: object
+        self: socket.socket, address: object, *args: object, **kwargs: object
     ) -> None:
         """Allow connects to loopback only, raise on anything else."""
 
         host = address[0] if isinstance(address, tuple) else address
         if host not in _LOOPBACK_HOSTS:
-            raise RuntimeError(
-                f"Outbound network blocked in offline test: {address!r}"
-            )
+            raise RuntimeError(f"Outbound network blocked in offline test: {address!r}")
         return real_connect(self, address, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(socket.socket, "connect", _checked_connect)
