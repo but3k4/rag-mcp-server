@@ -200,13 +200,7 @@ The first search after enabling downloads `ms-marco-MiniLM-L-12-v2` (~140 MB) an
 HF_HUB_OFFLINE=1 uv run rag-server
 ```
 
-The Docker image sets `HF_HUB_OFFLINE=1` by default because the embedder is pre-baked into the image. If you turn the reranker on for the first time inside the container, the download will fail with the default offline setting. Override it on the first launch only:
-
-```sh
-docker run -e HF_HUB_OFFLINE=0 -e RAG_RERANKER_ENABLED=true ...
-```
-
-Once the reranker is cached on the `/models` volume, drop the override on subsequent runs.
+The Docker image sets `HF_HUB_OFFLINE=1` by default. Both the embedder and the reranker are pre-baked into the image, so no override is needed.
 
 ### Choosing an embedding model
 
@@ -293,7 +287,7 @@ podman build -t rag-server .
 
 The image:
 - Runs as a non-root user (`uid=1000`).
-- Pre-bakes the embedder, so the first search doesn't pay the ~420 MB download on cold start. The reranker stays opt-in. Because the image runs with `HF_HUB_OFFLINE=1`, the first reranker run needs `HF_HUB_OFFLINE=0` to fetch the model. See [Offline mode](#offline-mode).
+- Pre-bakes both the embedder and the reranker so the container runs fully offline. No HuggingFace fetch is needed at any point during normal operation.
 - Ships a `HEALTHCHECK` that hits `:8766/healthz` on the sidecar health server (`RAG_HEALTH_PORT=8766`).
 - Handles `SIGTERM` for clean shutdowns when an orchestrator stops it.
 

@@ -6,12 +6,15 @@ COPY pyproject.toml uv.lock LICENSE README.md ./
 COPY rag/ ./rag/
 RUN uv sync --frozen --no-dev
 
-# Pre-download the default embedder so the first search doesn't pay the
-# ~440 MB download on cold start. Reranker stays opt-in and downloads on
-# first use (see RAG_RERANKER_ENABLED).
+# Pre-download the default embedder and reranker so the container runs
+# fully offline at runtime. The image sets HF_HUB_OFFLINE=1, so any model
+# that is not cached here would fail to load. Model identifiers come from
+# rag.config so a future default swap stays in sync with this layer.
 RUN HF_HOME=/models /app/.venv/bin/python -c "\
-from sentence_transformers import SentenceTransformer; \
-SentenceTransformer('BAAI/bge-base-en-v1.5')"
+from sentence_transformers import CrossEncoder, SentenceTransformer; \
+from rag.config import DEFAULT_EMBEDDER_MODEL, DEFAULT_RERANKER_MODEL; \
+SentenceTransformer(DEFAULT_EMBEDDER_MODEL); \
+CrossEncoder(DEFAULT_RERANKER_MODEL)"
 
 # Unprivileged user for runtime. /data and /models are the writable paths.
 # The image path /app stays read-only to the runtime user.
