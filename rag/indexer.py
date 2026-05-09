@@ -216,7 +216,16 @@ class Indexer:
             if indexed.get(file_str) == current_hash:
                 continue
 
-            logger.info("Indexing %s", file_path)
+            duplicate_of = self._store.find_path_by_hash(current_hash, file_str)
+            if duplicate_of is not None:
+                logger.info(
+                    "Already indexed: %s (matches %s)", file_path, duplicate_of
+                )
+                continue
+
+            logger.info(
+                "Indexing %s (%d bytes)", file_path, file_path.stat().st_size
+            )
 
             try:
                 chunks = chunk_file(file_path, self._chunk_size, self._chunk_overlap)
@@ -278,7 +287,12 @@ class Indexer:
         if self._store.get_indexed_sources().get(file_str) == current_hash:
             return
 
-        logger.info("Indexing %s", path)
+        duplicate_of = self._store.find_path_by_hash(current_hash, file_str)
+        if duplicate_of is not None:
+            logger.info("Already indexed: %s (matches %s)", path, duplicate_of)
+            return
+
+        logger.info("Indexing %s (%d bytes)", path, path.stat().st_size)
 
         try:
             chunks = chunk_file(path, self._chunk_size, self._chunk_overlap)

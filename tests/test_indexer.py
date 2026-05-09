@@ -28,6 +28,7 @@ class TestIndexerRun:
         """run() always returns an IndexSummary instance."""
 
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         result = indexer.run()
@@ -37,6 +38,7 @@ class TestIndexerRun:
         """An empty source directory produces zero scanned files."""
 
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run()
@@ -47,6 +49,7 @@ class TestIndexerRun:
 
         (tmp_path / "doc.txt").write_text("hello world content")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run()
@@ -62,11 +65,65 @@ class TestIndexerRun:
         doc.write_text("content")
         current_hash = hashlib.sha256(doc.read_bytes()).hexdigest()
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {str(doc): current_hash}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run()
         assert summary.files_updated == 0
         store.upsert_file.assert_not_called()
+
+    def test_duplicate_hash_skipped_with_already_indexed_log(
+        self, tmp_path: Path,
+        caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """
+        When another path already has the same content hash, skip with a log.
+
+        The store's find_path_by_hash returns the canonical path, so the
+        indexer must not call upsert_file and must emit an info log naming
+        the existing path.
+        """
+
+        doc = tmp_path / "copy.txt"
+        doc.write_text("identical content")
+        store = MagicMock()
+        store.find_path_by_hash.return_value = "/sources/canonical.txt"
+        store.get_indexed_sources.return_value = {}
+        indexer = self._make_indexer(store, [tmp_path])
+
+        with caplog.at_level("INFO", logger="rag.indexer"):
+            summary = indexer.run()
+
+        assert summary.files_updated == 0
+        store.upsert_file.assert_not_called()
+        assert any(
+            "Already indexed" in r.getMessage()
+            and "/sources/canonical.txt" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_indexing_log_includes_file_size(
+        self, tmp_path: Path,
+        caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The Indexing log line includes the file size in bytes."""
+
+        doc = tmp_path / "doc.txt"
+        payload = "hello world content"
+        doc.write_text(payload)
+        store = MagicMock()
+        store.find_path_by_hash.return_value = None
+        store.get_indexed_sources.return_value = {}
+        indexer = self._make_indexer(store, [tmp_path])
+
+        with caplog.at_level("INFO", logger="rag.indexer"):
+            indexer.run()
+
+        size_bytes = len(payload.encode())
+        assert any(
+            "Indexing" in r.getMessage() and f"{size_bytes} bytes" in r.getMessage()
+            for r in caplog.records
+        )
 
     def test_parse_failure_is_counted_not_raised(self, tmp_path: Path) -> None:
         """A file that cannot be parsed increments files_failed and continues."""
@@ -74,6 +131,7 @@ class TestIndexerRun:
         doc = tmp_path / "broken.pdf"
         doc.write_bytes(b"not a real pdf")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run()
@@ -86,6 +144,7 @@ class TestIndexerRun:
 
         missing = tmp_path / "missing"
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [missing])
         summary = indexer.run()
@@ -97,6 +156,7 @@ class TestIndexerRun:
 
         (tmp_path / "image.png").write_bytes(b"\x89PNG")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run()
@@ -109,6 +169,7 @@ class TestIndexerRun:
         sub.mkdir()
         (sub / "doc.txt").write_text("content")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run()
@@ -124,6 +185,7 @@ class TestIndexerRun:
         link = src / "link.txt"
         link.symlink_to(outside)
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [src])
         summary = indexer.run()
@@ -134,6 +196,7 @@ class TestIndexerRun:
 
         (tmp_path / "doc.txt").write_text("hello world content")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         indexer.run()
@@ -145,6 +208,7 @@ class TestIndexerRun:
         doc = tmp_path / "doc.txt"
         doc.write_text("content")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {
             str(doc): hashlib.sha256(doc.read_bytes()).hexdigest()
         }
@@ -153,13 +217,15 @@ class TestIndexerRun:
         store.build_bm25.assert_not_called()
 
     def test_read_failure_increments_failed_count(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If the file cannot be read for hashing, it is counted as failed."""
 
         doc = tmp_path / "doc.txt"
         doc.write_text("content")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
 
         original_read_bytes = Path.read_bytes
@@ -198,6 +264,7 @@ class TestIndexerNewMethods:
         (target / "doc.txt").write_text("content")
         (other / "doc.txt").write_text("other content")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run_for_dir(target)
@@ -210,6 +277,7 @@ class TestIndexerNewMethods:
         doc = tmp_path / "doc.txt"
         doc.write_text("hello")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         indexer.index_file(doc)
@@ -222,6 +290,7 @@ class TestIndexerNewMethods:
         doc.write_text("hello")
         current_hash = hashlib.sha256(doc.read_bytes()).hexdigest()
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {str(doc): current_hash}
         indexer = self._make_indexer(store, [tmp_path])
         indexer.index_file(doc)
@@ -233,6 +302,7 @@ class TestIndexerNewMethods:
         img = tmp_path / "photo.png"
         img.write_bytes(b"\x89PNG")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         indexer.index_file(img)
@@ -242,6 +312,7 @@ class TestIndexerNewMethods:
         """remove_file delegates to store.delete_file."""
 
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         indexer = self._make_indexer(store, [tmp_path])
         indexer.remove_file(tmp_path / "gone.txt")
         store.delete_file.assert_called_once_with(str(tmp_path / "gone.txt"))
@@ -250,6 +321,7 @@ class TestIndexerNewMethods:
         """add_source_dir adds the path to the internal source dirs list."""
 
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         indexer = self._make_indexer(store, [])
         new_dir = tmp_path / "new"
         indexer.add_source_dir(new_dir)
@@ -259,6 +331,7 @@ class TestIndexerNewMethods:
         """add_source_dir does not add duplicates."""
 
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         indexer = self._make_indexer(store, [tmp_path])
         indexer.add_source_dir(tmp_path)
         assert indexer._source_dirs.count(tmp_path) == 1
@@ -267,6 +340,7 @@ class TestIndexerNewMethods:
         """remove_source_dir removes the path and deletes its index entries."""
 
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         indexer = self._make_indexer(store, [tmp_path])
         indexer.remove_source_dir(tmp_path)
         assert tmp_path not in indexer._source_dirs
@@ -276,17 +350,20 @@ class TestIndexerNewMethods:
         """remove_source_dir for an unconfigured directory does not raise."""
 
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         indexer = self._make_indexer(store, [])
         indexer.remove_source_dir(tmp_path / "missing")  # must not raise
 
     def test_run_for_dir_read_failure_counted(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """run_for_dir counts files that cannot be read as failed."""
 
         doc = tmp_path / "doc.txt"
         doc.write_text("content")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         original_read_bytes = Path.read_bytes
 
@@ -309,19 +386,22 @@ class TestIndexerNewMethods:
         doc = tmp_path / "broken.pdf"
         doc.write_bytes(b"not a pdf")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run_for_dir(tmp_path)
         assert summary.files_failed == 1
 
     def test_index_file_read_failure_is_silent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """index_file does not raise when the file cannot be read."""
 
         doc = tmp_path / "doc.txt"
         doc.write_text("content")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         original_read_bytes = Path.read_bytes
 
@@ -343,6 +423,7 @@ class TestIndexerNewMethods:
         doc = tmp_path / "broken.pdf"
         doc.write_bytes(b"not a pdf")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         indexer.index_file(doc)  # must not raise
@@ -358,6 +439,7 @@ class TestMaxFileSize:
         doc = tmp_path / "big.txt"
         doc.write_text("x" * 1024)
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = Indexer(
             store=store,
@@ -377,6 +459,7 @@ class TestMaxFileSize:
         doc = tmp_path / "big.txt"
         doc.write_text("x" * 1024)
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = Indexer(
             store=store,
@@ -394,6 +477,7 @@ class TestMaxFileSize:
         doc = tmp_path / "small.txt"
         doc.write_text("tiny")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = Indexer(
             store=store,
@@ -421,6 +505,7 @@ class TestStoreErrorHandling:
         bad.write_text("bad content")
 
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
 
         def upsert_side_effect(path: str, *_args: object, **_kw: object) -> None:
@@ -442,6 +527,7 @@ class TestStoreErrorHandling:
         doc = tmp_path / "doc.txt"
         doc.write_text("content")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         store.upsert_file.side_effect = StoreError("chroma down")
         indexer = Indexer(
@@ -453,6 +539,7 @@ class TestStoreErrorHandling:
         """remove_file logs StoreError instead of propagating."""
 
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.delete_file.side_effect = StoreError("chroma down")
         indexer = Indexer(
             store=store, source_dirs=[tmp_path], chunk_size=100, chunk_overlap=10
@@ -463,6 +550,7 @@ class TestStoreErrorHandling:
         """_prune_missing skips entries that fail to delete and counts the rest."""
 
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         # Two stale entries, one of them fails to delete.
         store.get_indexed_sources.return_value = {
             str(tmp_path / "a.txt"): "h1",
@@ -496,6 +584,7 @@ class TestPruneMissing:
 
         gone = tmp_path / "gone.txt"
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {str(gone): "old-hash"}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run()
@@ -509,6 +598,7 @@ class TestPruneMissing:
         doc.write_text("content")
         current_hash = hashlib.sha256(doc.read_bytes()).hexdigest()
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {str(doc): current_hash}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run()
@@ -525,6 +615,7 @@ class TestPruneMissing:
         stale_in_scope = target / "gone.txt"
         stale_out_of_scope = other / "gone.txt"
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {
             str(stale_in_scope): "h1",
             str(stale_out_of_scope): "h2",
@@ -541,6 +632,7 @@ class TestPruneMissing:
         new = tmp_path / "new.txt"
         new.write_text("renamed content")
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {str(old): "old-hash"}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run()
@@ -551,7 +643,8 @@ class TestPruneMissing:
         assert summary.files_updated == 1
 
     def test_vanished_file_during_walk_not_counted_as_failed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """FileNotFoundError during hashing is skipped silently, not counted."""
 
@@ -568,6 +661,7 @@ class TestPruneMissing:
 
         monkeypatch.setattr(Path, "read_bytes", _vanish)
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         summary = indexer.run()
@@ -575,7 +669,8 @@ class TestPruneMissing:
         assert summary.failed_paths == []
 
     def test_index_file_vanished_file_is_silent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """index_file returns silently when the file vanishes during hashing."""
 
@@ -592,6 +687,7 @@ class TestPruneMissing:
 
         monkeypatch.setattr(Path, "read_bytes", _vanish)
         store = MagicMock()
+        store.find_path_by_hash.return_value = None
         store.get_indexed_sources.return_value = {}
         indexer = self._make_indexer(store, [tmp_path])
         indexer.index_file(doc)  # must not raise

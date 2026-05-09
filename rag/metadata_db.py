@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS parents (
 );
 
 CREATE INDEX IF NOT EXISTS idx_parents_source ON parents(source);
+
+CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);
 """
 
 # Maps target version -> callable that migrates the connection from (target-1)
@@ -216,6 +218,21 @@ class MetadataDB:
         with self._lock:
             rows = self._conn.execute("SELECT path, hash FROM file_hashes").fetchall()
         return dict(rows)
+
+    def find_path_by_hash(self, file_hash: str, exclude_path: str) -> str | None:
+        """
+        Return another indexed path that has this hash, or None.
+
+        Used by the indexer to detect content duplicates so the same file
+        sitting under multiple source directories gets embedded only once.
+        """
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT path FROM file_hashes WHERE hash = ? AND path != ? LIMIT 1",
+                (file_hash, exclude_path),
+            ).fetchone()
+        return row[0] if row else None
 
     def upsert_parents(self, rows: Iterable[tuple[str, str, str, str]]) -> None:
         """

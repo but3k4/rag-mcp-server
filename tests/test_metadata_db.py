@@ -91,6 +91,42 @@ class TestSchemaVersioning:
         db2.close()
 
 
+class TestFindPathByHash:
+    """Tests for the duplicate-detection lookup."""
+
+    def test_returns_other_path_with_same_hash(self, tmp_path: Path) -> None:
+        """A second path with the same hash is returned to the caller."""
+
+        db = MetadataDB(tmp_path / "dup.db")
+        db.set_file_hash("/a.txt", "h1")
+        db.set_file_hash("/b.txt", "h1")
+        try:
+            assert db.find_path_by_hash("h1", "/b.txt") == "/a.txt"
+        finally:
+            db.close()
+
+    def test_returns_none_when_only_excluded_path_matches(
+        self, tmp_path: Path
+    ) -> None:
+        """The excluded path is filtered out even if its hash matches."""
+
+        db = MetadataDB(tmp_path / "dup.db")
+        db.set_file_hash("/a.txt", "h1")
+        try:
+            assert db.find_path_by_hash("h1", "/a.txt") is None
+        finally:
+            db.close()
+
+    def test_returns_none_when_hash_unseen(self, tmp_path: Path) -> None:
+        """An unknown hash returns None."""
+
+        db = MetadataDB(tmp_path / "dup.db")
+        try:
+            assert db.find_path_by_hash("missing", "/a.txt") is None
+        finally:
+            db.close()
+
+
 class TestCloseIdempotency:
     """close() must be safe to call multiple times."""
 

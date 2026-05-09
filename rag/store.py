@@ -404,6 +404,16 @@ class VectorStore:
 
         return self._db.all_file_hashes()
 
+    def find_path_by_hash(self, file_hash: str, exclude_path: str) -> str | None:
+        """
+        Return another indexed path that has this hash, or None.
+
+        Lets the indexer skip embedding the same content twice when the
+        same file appears under multiple source directories.
+        """
+
+        return self._db.find_path_by_hash(file_hash, exclude_path)
+
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         """
         Hybrid semantic + BM25 search with parent-child retrieval.
