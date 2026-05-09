@@ -51,6 +51,13 @@ packages = ["rag"]
 testpaths = ["tests"]
 addopts = "--cov=rag --cov-report=term-missing"
 asyncio_mode = "auto"
+filterwarnings = [
+    # chromadb uses the deprecated asyncio.iscoroutinefunction (fixed upstream, not yet released)
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:chromadb",
+    # chromadb does not close all internal SQLite connections on client.close(); suppress
+    # the resulting ResourceWarning so our own unclosed-resource bugs remain visible
+    "ignore:unclosed database:ResourceWarning",
+]
 
 [tool.bandit]
 exclude_dirs = ["tests"]

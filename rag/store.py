@@ -13,11 +13,13 @@ ranking via Reciprocal Rank Fusion.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import gc
 import hashlib
 import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from chromadb.api.shared_system_client import SharedSystemClient
 from chromadb.errors import ChromaError, NotFoundError
 
 from rag.errors import StoreError
@@ -136,13 +138,22 @@ class VectorStore:
         """
         Release resources held by the store.
 
-        Closes the underlying SQLite metadata DB. Idempotent. The Chroma
-        client manages its own persistence and does not need explicit
-        closing. Sentence-transformer models and the BM25 index are in
-        memory and will be garbage-collected with the instance.
+        Closes the SQLite metadata DB and the Chroma client. Idempotent.
+        Sentence-transformer models and the BM25 index are in memory and
+        will be garbage-collected with the instance.
         """
 
         self._db.close()
+        if hasattr(self, "_client"):
+            self._client.close()  # type: ignore[attr-defined]
+            # Chroma's shared system registry keeps SQLite connections alive until
+            # explicitly cleared. Drop all our references to Chroma objects before
+            # gc.collect() so the connections are actually freed.
+            SharedSystemClient.clear_system_cache()
+            if hasattr(self, "_docs"):
+                del self._docs
+            del self._client
+            gc.collect()
 
     def __enter__(self) -> VectorStore:
         """Return self so with VectorStore(...) as store: yields the store."""
