@@ -89,8 +89,7 @@ class ToolDeps:
 
 
 def register_tools(
-    mcp: _fastmcp.FastMCP,
-    deps: ToolDeps
+    mcp: _fastmcp.FastMCP, deps: ToolDeps
 ) -> dict[str, Callable[..., Awaitable[Any]]]:
     """
     Register every MCP tool against mcp and return a name to callable map.

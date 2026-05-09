@@ -50,18 +50,31 @@ def configure_logging(
     stream = sys.stderr if stream is None else stream
 
     timestamper = structlog.processors.TimeStamper(fmt="iso", utc=True)
+    # ExceptionRenderer is excluded here: ConsoleRenderer handles exceptions
+    # natively (since structlog 21.2) and warns if they are pre-formatted.
+    # For JSON mode it is added explicitly below.
     shared_processors: list[structlog.typing.Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         timestamper,
         structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
     ]
+
+    renderer: structlog.typing.Processor
+    if log_format == "json":
+        renderer = structlog.processors.JSONRenderer()
+        exc_processor: list[structlog.typing.Processor] = [
+            structlog.processors.ExceptionRenderer()
+        ]
+    else:
+        renderer = structlog.dev.ConsoleRenderer(colors=stream.isatty())
+        exc_processor = []
 
     structlog.configure(
         processors=[
             *shared_processors,
+            *exc_processor,
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
@@ -69,14 +82,8 @@ def configure_logging(
         cache_logger_on_first_use=False,
     )
 
-    renderer: structlog.typing.Processor
-    if log_format == "json":
-        renderer = structlog.processors.JSONRenderer()
-    else:
-        renderer = structlog.dev.ConsoleRenderer(colors=stream.isatty())
-
     formatter = structlog.stdlib.ProcessorFormatter(
-        foreign_pre_chain=shared_processors,
+        foreign_pre_chain=[*shared_processors, *exc_processor],
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             renderer,
