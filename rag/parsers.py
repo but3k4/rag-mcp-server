@@ -10,6 +10,7 @@ Each parser returns a list of chunk dicts with three keys:
 from __future__ import annotations
 
 import csv
+from functools import cached_property
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -28,12 +29,62 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
     {".txt", ".md", ".pdf", ".docx", ".pptx", ".csv", ".xlsx", ".xml"}
 )
 
+# Identifier for the parser pipeline. Bump when the parsing or chunking
+# behaviour changes in a way that invalidates previously embedded chunks.
+# VectorStore reads this and forces a full reindex when it differs from
+# the value recorded in the metadata DB.
+PARSER_VERSION = "docling-v2-tesseract-ocr"
+
 DEFAULT_CHUNK_SIZE = 1400  # characters
 DEFAULT_CHUNK_OVERLAP = 150
 
 
 class ParseError(RagError):
     """Raised when a file cannot be parsed into chunks."""
+
+
+class PasswordProtectedError(ParseError):
+    """
+    Raised when a PDF cannot be parsed because it is password-protected.
+
+    Distinct from generic ParseError so the indexer can log it cleanly
+    (a one-line warning, no traceback) instead of treating it as an
+    unexpected failure. The user has no way to fix this from the
+    indexer's side — the file genuinely cannot be parsed without the
+    password.
+    """
+
+
+def _is_pdf_password_protected(path: Path) -> bool:
+    """
+    Return True if a PDF file requires a password to open.
+
+    Docling cannot be relied on to surface this: its document loader
+    catches the underlying pypdfium2 PdfiumError, logs it, swallows it,
+    and later raises a generic ConversionError("Input document ... is
+    not valid") with no chained cause. Walking __cause__/__context__
+    finds nothing. So we open the file directly with pypdfium2 first;
+    the check is a header read, fast even on large PDFs.
+
+    Best-effort: any failure to load pypdfium2 or unexpected exception
+    returns False so Docling still gets to try (and surface its own
+    error if appropriate).
+    """
+
+    try:
+        import pypdfium2  # noqa: PLC0415
+        from pypdfium2._helpers.misc import PdfiumError  # noqa: PLC0415
+    except ImportError:
+        return False
+
+    try:
+        doc = pypdfium2.PdfDocument(str(path))
+        doc.close()
+    except PdfiumError as exc:
+        return "password" in str(exc).lower()
+    except (OSError, ValueError):
+        return False
+    return False
 
 
 def chunk_file(
@@ -61,11 +112,11 @@ def chunk_file(
     dispatch = {
         ".txt": _chunk_text,
         ".md": _chunk_markdown,
-        ".pdf": _chunk_pdf,
-        ".docx": _chunk_docx,
-        ".pptx": _chunk_pptx,
+        ".pdf": _chunk_with_docling,
+        ".docx": _chunk_with_docling,
+        ".pptx": _chunk_with_docling,
+        ".xlsx": _chunk_with_docling,
         ".csv": _chunk_csv,
-        ".xlsx": _chunk_xlsx,
         ".xml": _chunk_xml,
     }
 
@@ -171,6 +222,137 @@ def _chunk_markdown(path: Path, chunk_size: int, chunk_overlap: int) -> list[Chu
     except OSError as exc:
         raise ParseError(f"Cannot read {path}: {exc}") from exc
 
+    return _chunk_markdown_text(text, chunk_size, chunk_overlap)
+
+
+def _silence_leptonica_stderr() -> None:
+    """
+    Mute libleptonica's C-level stderr output.
+
+    Leptonica prints diagnostic messages (e.g. "Error in
+    boxClipToRectangle: box outside rectangle") directly to stderr,
+    bypassing Python logging. The messages are recoverable noise
+    triggered by Docling's OSD pre-pass on tiny image residuals that
+    layout-heron has already extracted text from. Calling
+    setMsgSeverity(L_SEVERITY_NONE=6) silences them.
+
+    Best-effort: if libleptonica is not loadable (different OS,
+    different SONAME, missing symbol), silently leave stderr alone
+    rather than fail the indexer.
+    """
+
+    import ctypes  # noqa: PLC0415
+    import ctypes.util  # noqa: PLC0415
+
+    lib_name = ctypes.util.find_library("lept")
+    if lib_name is None:
+        return
+
+    try:
+        lept = ctypes.CDLL(lib_name)
+        lept.setMsgSeverity.restype = ctypes.c_int
+        lept.setMsgSeverity.argtypes = [ctypes.c_int]
+        l_severity_none = 6
+        lept.setMsgSeverity(l_severity_none)
+    except (OSError, AttributeError):
+        return
+
+
+class _DoclingPipeline:
+    """
+    Lazy holder for Docling's DocumentConverter.
+
+    The converter is heavy: first access loads the layout and TableFormer
+    models into memory (~360 MB on disk). cached_property defers
+    construction until a PDF actually needs parsing and reuses the same
+    converter for every subsequent call within the process.
+
+    OCR is wired explicitly to Tesseract because Docling's "auto" OCR
+    detector probes ocrmac / rapidocr / easyocr in that order and never
+    falls through to Tesseract. Languages are pinned to English,
+    Portuguese, Spanish (matching the tesseract-ocr-* apt packages baked
+    into the Docker image). Add language codes here and the corresponding
+    apt package in the Dockerfile to extend coverage.
+
+    Tests can override the cached converter by assigning to the
+    `converter` attribute (writes to __dict__ and masks the descriptor)
+    or by replacing the module-level _DOCLING_PIPELINE singleton with a
+    fresh instance.
+    """
+
+    @cached_property
+    def converter(self) -> Any:  # noqa: ANN401
+        """Build and cache the DocumentConverter on first access."""
+
+        _silence_leptonica_stderr()
+        from docling.datamodel.base_models import InputFormat  # noqa: PLC0415
+        from docling.datamodel.pipeline_options import (  # noqa: PLC0415
+            PdfPipelineOptions,
+            TesseractOcrOptions,
+        )
+        from docling.document_converter import (  # noqa: PLC0415
+            DocumentConverter,
+            PdfFormatOption,
+        )
+
+        pdf_options = PdfPipelineOptions(
+            ocr_options=TesseractOcrOptions(lang=["eng", "por", "spa"])
+        )
+        return DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
+            }
+        )
+
+
+_DOCLING_PIPELINE = _DoclingPipeline()
+
+
+def _chunk_with_docling(path: Path, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
+    """
+    Convert a structured document to markdown via Docling and chunk it.
+
+    Used for PDF, DOCX, PPTX, XLSX. Docling produces ATX-headed markdown
+    that the existing markdown chunker splits into section-aware chunks,
+    so layout-derived headings and tables flow through unchanged.
+
+    Args:
+        path: Path to the source file.
+        chunk_size: Maximum characters per chunk.
+        chunk_overlap: Characters of overlap between consecutive chunks.
+
+    Returns:
+        List of chunk dicts keyed by markdown header section.
+
+    Raises:
+        ParseError: If docling is not installed or conversion fails.
+    """
+
+    try:
+        from docling.exceptions import ConversionError  # noqa: PLC0415
+    except ImportError as exc:
+        raise ParseError("docling is not installed") from exc
+
+    if path.suffix.lower() == ".pdf" and _is_pdf_password_protected(path):
+        raise PasswordProtectedError(f"PDF is password-protected: {path}")
+
+    try:
+        result = _DOCLING_PIPELINE.converter.convert(path)
+        markdown = result.document.export_to_markdown()
+    except (ConversionError, OSError, ValueError) as exc:
+        raise ParseError(f"Cannot parse {path}: {exc}") from exc
+
+    return _chunk_markdown_text(markdown, chunk_size, chunk_overlap)
+
+
+def _chunk_markdown_text(text: str, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
+    """
+    Split markdown text on ATX headers (# through ####) into sections.
+
+    Pulled out of _chunk_markdown so Docling-generated markdown can reuse
+    the same section-aware chunking without round-tripping through disk.
+    """
+
     sections = re.split(r"(?=^#{1,4} )", text, flags=re.MULTILINE)
     chunks: list[Chunk] = []
 
@@ -183,151 +365,6 @@ def _chunk_markdown(path: Path, chunk_size: int, chunk_overlap: int) -> list[Chu
 
         for sub in _split_text(section, chunk_size, chunk_overlap):
             chunks.append(_make_chunk(sub, section_title, len(chunks)))
-    return chunks
-
-
-def _chunk_pdf(path: Path, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
-    """
-    Extract text from each PDF page as a separate section.
-
-    Args:
-        path: Path to the PDF file.
-        chunk_size: Maximum characters per chunk.
-        chunk_overlap: Characters of overlap between consecutive chunks.
-
-    Returns:
-        List of chunk dicts, one or more per non-blank page.
-
-    Raises:
-        ParseError: If pypdf is not installed or the file cannot be parsed.
-    """
-
-    try:
-        # I hate to import things inside functions but pypdf is a large
-        # dependency and this keeps it out of the way for users who don't need
-        # PDF support.
-        import pypdf  # noqa: PLC0415
-        from pypdf.errors import PyPdfError  # noqa: PLC0415
-    except ImportError as exc:
-        raise ParseError("pypdf is not installed") from exc
-
-    try:
-        with path.open("rb") as fh:
-            reader = pypdf.PdfReader(fh)
-            chunks: list[Chunk] = []
-
-            for i, page in enumerate(reader.pages):
-                text = page.extract_text() or ""
-                if not text.strip():
-                    continue
-
-                section = f"Page {i + 1}"
-
-                for sub in _split_text(text, chunk_size, chunk_overlap):
-                    chunks.append(_make_chunk(sub, section, len(chunks)))
-    except (PyPdfError, OSError) as exc:
-        raise ParseError(f"Cannot parse PDF {path}: {exc}") from exc
-    return chunks
-
-
-def _chunk_docx(path: Path, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
-    """
-    Extract text from a Word document, splitting on Heading styles.
-
-    Args:
-        path: Path to the .docx file.
-        chunk_size: Maximum characters per chunk.
-        chunk_overlap: Characters of overlap between consecutive chunks.
-
-    Returns:
-        List of chunk dicts keyed by heading section.
-
-    Raises:
-        ParseError: If python-docx is not installed or parsing fails.
-    """
-
-    try:
-        # Again, importing inside the function to avoid the dependency for
-        # users who don't need DOCX support.
-        import docx  # noqa: PLC0415
-        from docx.opc.exceptions import OpcError  # noqa: PLC0415
-    except ImportError as exc:
-        raise ParseError("python-docx is not installed") from exc
-
-    try:
-        doc = docx.Document(str(path))
-        chunks: list[Chunk] = []
-        current_section = ""
-        buffer: list[str] = []
-
-        for para in doc.paragraphs:
-            if para.style is not None and para.style.name.startswith("Heading"):
-                if buffer:
-                    for sub in _split_text(
-                        "\n\n".join(buffer), chunk_size, chunk_overlap
-                    ):
-                        chunks.append(_make_chunk(sub, current_section, len(chunks)))
-                    buffer.clear()
-                current_section = para.text
-            elif para.text.strip():
-                buffer.append(para.text)
-
-        if buffer:
-            for sub in _split_text("\n\n".join(buffer), chunk_size, chunk_overlap):
-                chunks.append(_make_chunk(sub, current_section, len(chunks)))
-
-    except (OpcError, KeyError, ValueError, OSError) as exc:
-        raise ParseError(f"Cannot parse DOCX {path}: {exc}") from exc
-    return chunks
-
-
-def _chunk_pptx(path: Path, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
-    """
-    Extract text from each slide as a separate section.
-
-    Args:
-        path: Path to the .pptx file.
-        chunk_size: Unused. Each slide is stored as a single chunk.
-        chunk_overlap: Unused. Each slide is stored as a single chunk.
-
-    Returns:
-        List of chunk dicts, one per non-blank slide.
-
-    Raises:
-        ParseError: If python-pptx is not installed or parsing fails.
-    """
-
-    try:
-        # Again, importing inside the function to avoid the dependency for
-        # users who don't need PPTX support.
-        from pptx import Presentation  # noqa: PLC0415
-        from pptx.exc import PythonPptxError  # noqa: PLC0415
-    except ImportError as exc:
-        raise ParseError("python-pptx is not installed") from exc
-
-    try:
-        prs = Presentation(str(path))
-        chunks: list[Chunk] = []
-        for i, slide in enumerate(prs.slides):
-            title = ""
-            texts: list[str] = []
-
-            for shape in slide.shapes:
-                if not shape.has_text_frame:
-                    continue
-
-                if shape.is_placeholder and shape.placeholder_format.idx == 0:
-                    title = shape.text_frame.text
-                else:
-                    texts.append(shape.text_frame.text)
-            content = "\n".join(t for t in texts if t.strip())
-            combined = f"{title}\n{content}".strip() if title else content
-
-            if combined:
-                section = f"Slide {i + 1}: {title}" if title else f"Slide {i + 1}"
-                chunks.append(_make_chunk(combined, section, len(chunks)))
-    except (PythonPptxError, KeyError, ValueError, OSError) as exc:
-        raise ParseError(f"Cannot parse PPTX {path}: {exc}") from exc
     return chunks
 
 
@@ -360,55 +397,6 @@ def _chunk_csv(path: Path, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
         raise ParseError(f"Cannot parse CSV {path}: {exc}") from exc
 
     text = "\n".join(rows)
-    return [
-        _make_chunk(c, "", i)
-        for i, c in enumerate(_split_text(text, chunk_size, chunk_overlap))
-    ]
-
-
-def _chunk_xlsx(path: Path, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
-    """
-    Flatten all worksheets in an XLSX file into pipe-delimited rows.
-
-    Rows from every sheet are concatenated without sheet separators and
-    empty cells become empty strings. Formulas are read as their cached
-    values (data_only=True).
-
-    Args:
-        path: Path to the .xlsx file.
-        chunk_size: Maximum characters per chunk.
-        chunk_overlap: Characters of overlap between consecutive chunks.
-
-    Returns:
-        List of chunk dicts with empty section titles.
-
-    Raises:
-        ParseError: If openpyxl is not installed or the file cannot be parsed.
-    """
-
-    try:
-        # Again, importing inside the function to avoid the dependency for
-        # users who don't need XLSX support.
-        import openpyxl  # noqa: PLC0415
-        from openpyxl.utils.exceptions import InvalidFileException  # noqa: PLC0415
-    except ImportError as exc:
-        raise ParseError("openpyxl is not installed") from exc
-
-    import zipfile  # noqa: PLC0415
-
-    try:
-        wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
-        parts: list[str] = []
-
-        for sheet in wb.worksheets:
-            for row in sheet.iter_rows(values_only=True):
-                cells = [str(cell) if cell is not None else "" for cell in row]
-                parts.append(" | ".join(cells))
-        wb.close()
-    except (InvalidFileException, zipfile.BadZipFile, OSError) as exc:
-        raise ParseError(f"Cannot parse XLSX {path}: {exc}") from exc
-
-    text = "\n".join(parts)
     return [
         _make_chunk(c, "", i)
         for i, c in enumerate(_split_text(text, chunk_size, chunk_overlap))

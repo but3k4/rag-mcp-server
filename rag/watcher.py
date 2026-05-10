@@ -215,7 +215,8 @@ class DirectoryWatcher:
         self._debouncer = _Debouncer(debounce_seconds) if debounce_seconds > 0 else None
 
     def watch(self, directories: list[Path]) -> None:
-        """Schedule watching for each directory not already being watched.
+        """
+        Schedule watching for each directory not already being watched.
 
         Directories that do not exist are skipped with a warning. Safe to call
         before start(). Schedules are queued and activated when the observer
@@ -240,7 +241,8 @@ class DirectoryWatcher:
             logger.info("Watching: %s", resolved)
 
     def unwatch(self, directory: Path) -> None:
-        """Stop watching a directory.
+        """
+        Stop watching a directory.
 
         Args:
             directory: Resolved absolute path to stop watching.

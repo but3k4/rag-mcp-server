@@ -73,8 +73,7 @@ class TestIndexerRun:
         store.upsert_file.assert_not_called()
 
     def test_duplicate_hash_skipped_with_already_indexed_log(
-        self, tmp_path: Path,
-        caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """
         When another path already has the same content hash, skip with a log.
@@ -102,9 +101,53 @@ class TestIndexerRun:
             for r in caplog.records
         )
 
+    def test_password_protected_file_logged_as_warning(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """
+        A PasswordProtectedError surfaces as a clean warning, not a traceback.
+
+        chunk_file is monkeypatched to raise the typed exception. The
+        indexer must log it via logger.warning (so the structured-log
+        record has no exception traceback attached) while still counting
+        the file as failed.
+        """
+
+        from rag.parsers import PasswordProtectedError  # noqa: PLC0415
+
+        doc = tmp_path / "locked.pdf"
+        doc.write_bytes(b"placeholder")
+        store = MagicMock()
+        store.find_path_by_hash.return_value = None
+        store.get_indexed_sources.return_value = {}
+
+        def _raise_password(*_args: object, **_kwargs: object) -> object:
+            raise PasswordProtectedError(f"PDF is password-protected: {doc}")
+
+        monkeypatch.setattr("rag.indexer.chunk_file", _raise_password)
+        indexer = self._make_indexer(store, [tmp_path])
+
+        with caplog.at_level("WARNING", logger="rag.indexer"):
+            summary = indexer.run()
+
+        assert summary.files_failed == 1
+        assert str(doc) in summary.failed_paths
+        store.upsert_file.assert_not_called()
+
+        password_records = [
+            r
+            for r in caplog.records
+            if "password-protected" in r.getMessage() and r.levelname == "WARNING"
+        ]
+        assert len(password_records) == 1
+        # logger.warning() must not attach a traceback the way logger.exception() does.
+        assert password_records[0].exc_info is None
+
     def test_indexing_log_includes_file_size(
-        self, tmp_path: Path,
-        caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The Indexing log line includes the file size in bytes."""
 
@@ -217,8 +260,7 @@ class TestIndexerRun:
         store.build_bm25.assert_not_called()
 
     def test_read_failure_increments_failed_count(
-        self, tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If the file cannot be read for hashing, it is counted as failed."""
 
@@ -355,8 +397,7 @@ class TestIndexerNewMethods:
         indexer.remove_source_dir(tmp_path / "missing")  # must not raise
 
     def test_run_for_dir_read_failure_counted(
-        self, tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """run_for_dir counts files that cannot be read as failed."""
 
@@ -393,8 +434,7 @@ class TestIndexerNewMethods:
         assert summary.files_failed == 1
 
     def test_index_file_read_failure_is_silent(
-        self, tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """index_file does not raise when the file cannot be read."""
 
@@ -643,8 +683,7 @@ class TestPruneMissing:
         assert summary.files_updated == 1
 
     def test_vanished_file_during_walk_not_counted_as_failed(
-        self, tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """FileNotFoundError during hashing is skipped silently, not counted."""
 
@@ -669,8 +708,7 @@ class TestPruneMissing:
         assert summary.failed_paths == []
 
     def test_index_file_vanished_file_is_silent(
-        self, tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """index_file returns silently when the file vanishes during hashing."""
 

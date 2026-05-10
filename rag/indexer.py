@@ -21,6 +21,7 @@ from rag.parsers import (
     DEFAULT_CHUNK_SIZE,
     SUPPORTED_EXTENSIONS,
     ParseError,
+    PasswordProtectedError,
     chunk_file,
 )
 
@@ -218,17 +219,18 @@ class Indexer:
 
             duplicate_of = self._store.find_path_by_hash(current_hash, file_str)
             if duplicate_of is not None:
-                logger.info(
-                    "Already indexed: %s (matches %s)", file_path, duplicate_of
-                )
+                logger.info("Already indexed: %s (matches %s)", file_path, duplicate_of)
                 continue
 
-            logger.info(
-                "Indexing %s (%d bytes)", file_path, file_path.stat().st_size
-            )
+            logger.info("Indexing %s (%d bytes)", file_path, file_path.stat().st_size)
 
             try:
                 chunks = chunk_file(file_path, self._chunk_size, self._chunk_overlap)
+            except PasswordProtectedError as exc:
+                logger.warning("Skipping %s: %s", file_path, exc)
+                summary.files_failed += 1
+                summary.failed_paths.append(file_str)
+                continue
             except ParseError:
                 logger.exception("Failed to parse %s", file_path)
                 summary.files_failed += 1
@@ -296,6 +298,9 @@ class Indexer:
 
         try:
             chunks = chunk_file(path, self._chunk_size, self._chunk_overlap)
+        except PasswordProtectedError as exc:
+            logger.warning("Skipping %s: %s", path, exc)
+            return
         except ParseError:
             logger.exception("Failed to parse %s", path)
             return

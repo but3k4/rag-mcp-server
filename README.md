@@ -17,7 +17,7 @@ Once the server is running, six MCP tools are available:
 - **remove_directory(path)**: Unregisters a directory and removes its indexed data.
 - **get_status()**: Shows configured directories, last indexed timestamps, and total file count.
 
-Supported file types: `.txt`, `.md`, `.pdf`, `.docx`, `.pptx`, `.csv`, `.xlsx`, `.xml`
+Supported file types: `.txt`, `.md`, `.pdf`, `.docx`, `.pptx`, `.csv`, `.xlsx`, `.xml`. The structured formats (PDF, DOCX, PPTX, XLSX) are parsed by [Docling](https://docling-project.github.io/docling/), which produces ATX-headed markdown with preserved tables. The same chunker handles markdown, Docling output, and `.md` files uniformly.
 
 ## Why I built this
 
@@ -40,7 +40,8 @@ The Chroma index acts as a rebuildable cache over the canonical data stored in S
   | ChromaDB               |  | MetadataDB (SQLite, WAL)   |
   |                        |  |                            |
   |   docs   child chunks  |  |   kv          schema_ver,  |
-  |          + embeddings  |  |               model name   |
+  |          + embeddings  |  |               model name,  |
+  |                        |  |               parser ver   |
   |                        |  |   file_hashes path -> sha  |
   |   (cosine)             |  |   parents     id, source,  |
   |                        |  |               section,     |
@@ -72,7 +73,13 @@ cd rag-server
 uv sync
 ```
 
-On first startup, the server downloads the `sentence-transformers/all-mpnet-base-v2` embedding model (~420 MB) from HuggingFace and caches it locally. If the optional reranker is enabled, the first query will also download `cross-encoder/ms-marco-MiniLM-L-12-v2` (~140 MB). After that, everything runs offline.
+On first startup, the server downloads three sets of models from HuggingFace and caches them locally:
+
+- `sentence-transformers/all-mpnet-base-v2` embedder (~420 MB)
+- Docling layout + TableFormer weights (~360 MB), used when parsing PDF, DOCX, PPTX, or XLSX files
+- (optional) `cross-encoder/ms-marco-MiniLM-L-12-v2` reranker (~140 MB), only if `reranker_enabled = true`
+
+After that, everything runs offline. The Dockerfile pre-bakes all three sets, so the container image starts without any network call.
 
 ## Configure
 
@@ -224,7 +231,42 @@ query_prefix = "Represent this sentence for searching relevant passages: "
 reranker_model = "BAAI/bge-reranker-base"
 ```
 
-Changing `embedder_model` triggers a full reindex on the next startup. The BGE embedder downloads ~440 MB on first use. The BGE reranker adds ~280 MB if enabled.
+Changing `embedder_model` triggers a full reindex on the next startup. So does upgrading to a parser version that produces different chunk text. The metadata DB tracks both the embedder name and a `parser_version` key, and a mismatch on either drops the docs collection and re-embeds every source file. The BGE embedder downloads ~440 MB on first use. The BGE reranker adds ~280 MB if enabled.
+
+### Dependency origin
+
+The default dependency closure contains no packages or models from Chinese institutions. This matters because some companies have policies against shipping code or weights from PRC-affiliated entities, and Docling's `[standard]` extra would otherwise pull in [`rapidocr`](https://github.com/RapidAI/RapidOCR), a Chinese-origin OCR engine whose PP-OCRv4 weights are hosted on [modelscope.cn](https://www.modelscope.cn) (Alibaba's model hub).
+
+`rapidocr` is excluded via `[tool.uv]` `override-dependencies` in `pyproject.toml`:
+
+```toml
+[tool.uv]
+override-dependencies = [
+    "rapidocr ; sys_platform == 'never'",
+]
+```
+
+The marker `sys_platform == 'never'` is unsatisfiable, so uv resolves `rapidocr` as not-installed on any platform while still letting `docling-slim[standard]` install everything else. Because nothing else in the closure pulled in OpenCV transitively after dropping `rapidocr` (and `docling-ibm-models` imports `cv2` without declaring it), `opencv-python-headless` is added explicitly.
+
+**OCR for scanned PDFs.** Tesseract (HP/Google, Apache-2) is installed by default with English, Portuguese, and Spanish language data. Docling auto-detects `tesserocr` at pipeline init and uses it on pages with no extractable text. Digital PDFs are unaffected. To add another language, append the corresponding `tesseract-ocr-<lang>` apt package to the `Dockerfile` (e.g. `tesseract-ocr-fra`, `tesseract-ocr-deu`) and rebuild. Tesseract reads `.traineddata` files from the system `tessdata` directory, so there is no model download at runtime.
+
+Origin map for what does ship:
+
+| Origin | Packages and models |
+|---|---|
+| Anthropic (US) | `mcp[cli]` |
+| Chroma (US) | `chromadb` |
+| IBM Research (US) | `docling-slim`, `docling-core`, `docling-ibm-models`, `docling-parse`, `docling-project/docling-layout-heron`, `docling-project/docling-models` (TableFormer) |
+| Meta (US) | `torch`, `torchvision` |
+| Microsoft (US) | `sentence-transformers/all-mpnet-base-v2`, `cross-encoder/ms-marco-MiniLM-L-12-v2`, `onnxruntime` |
+| Google (US) | `pypdfium2` (wraps PDFium) |
+| HuggingFace (FR/US) | `transformers`, `huggingface-hub` |
+| UKP Lab Darmstadt (DE) | `sentence-transformers` |
+| OpenCV (open-source, EU/global) | `opencv-python-headless` |
+| HP / Google (Apache-2) | `tesseract-ocr` (system package), `tesserocr` (Python bindings), language data files for English / Portuguese / Spanish |
+| Open-source / NumFOCUS / community | `numpy`, `scipy`, `scikit-learn`, `pydantic`, `lxml`, `structlog`, `watchdog`, `marko`, `pylatexenc`, `rank-bm25`, others |
+
+PS: If you opt back into the BAAI/BGE models above, you reintroduce Chinese-origin model weights at the *model* layer. The package closure is unaffected.
 
 ### Logging and shutdown
 
@@ -287,14 +329,14 @@ podman build -t rag-server .
 
 The image:
 - Runs as a non-root user (`uid=1000`).
-- Pre-bakes both the embedder and the reranker so the container runs fully offline. No HuggingFace fetch is needed at any point during normal operation.
+- Pre-bakes the embedder, the reranker, and the Docling parser models so the container runs fully offline. No HuggingFace fetch is needed at any point during normal operation.
 - Ships a `HEALTHCHECK` that hits `:8766/healthz` on the sidecar health server (`RAG_HEALTH_PORT=8766`).
 - Handles `SIGTERM` for clean shutdowns when an orchestrator stops it.
 
 Three volumes matter:
 
 - **`/data`**: Chroma DB, `metadata.db` (SQLite), and `runtime_state.json`. Persist this or lose the index on every restart.
-- **`/models`**: HuggingFace cache (`HF_HOME`). The base image already contains the embedder. Persisting this volume avoids re-downloading the reranker (if enabled) on every restart.
+- **`/models`**: HuggingFace cache (`HF_HOME`). The base image already contains the embedder, the reranker, and the Docling parser models. The default compose setup leaves this as an anonymous volume populated from the image so a `--build` always picks up the freshly baked weights. Bind-mounting a host path here is supported but masks the baked cache, so the host directory must contain compatible model files.
 - **`/sources/...`**: bind mounts for the documents you want indexed. Mount paths must match whatever you pass in `RAG_SOURCE_DIRS`.
 
 ### Persistent SSE server (recommended for containers)

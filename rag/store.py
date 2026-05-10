@@ -24,6 +24,7 @@ from chromadb.errors import ChromaError, NotFoundError
 
 from rag.errors import StoreError
 from rag.metadata_db import MetadataDB
+from rag.parsers import PARSER_VERSION
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -40,7 +41,8 @@ DEFAULT_FETCH_N_MULTIPLIER = 4
 DEFAULT_RRF_K = 60
 DEFAULT_RERANKER_ENABLED = False
 DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-12-v2"
-# BGE alternative. Change all three together. See config.py and README for details.
+# BGE alternative. Change all three together. See config.py and README
+# for details.
 DEFAULT_RERANKER_POOL_SIZE = 20
 
 
@@ -124,6 +126,7 @@ class VectorStore:
         self._bm25_ids: list[str] = []
 
         self._check_model_compatibility()
+        self._check_parser_compatibility()
 
         self._docs = self._client.get_or_create_collection(
             name="docs",
@@ -194,6 +197,31 @@ class VectorStore:
             self._db.clear_indexed_state()
 
         self._db.set_model_name(self._model_name)
+
+    def _check_parser_compatibility(self) -> None:
+        """
+        Wipe the index if the parser pipeline version has changed.
+
+        Parsing changes invalidate previously embedded chunks because
+        section boundaries, table representation, and chunk text can
+        differ even from the same source file. A version mismatch
+        forces a full reindex on the next pass.
+        """
+
+        stored = self._db.get_parser_version()
+        if stored is None:
+            self._db.set_parser_version(PARSER_VERSION)
+            return
+
+        if stored != PARSER_VERSION:  # pragma: no cover (manual upgrade path)
+            logger.info(
+                "Parser version changed from %s to %s. Clearing index.",
+                stored,
+                PARSER_VERSION,
+            )
+            self._drop_docs_collection()
+            self._db.clear_indexed_state()
+            self._db.set_parser_version(PARSER_VERSION)
 
     def _drop_docs_collection(self) -> None:
         """Delete the Chroma docs collection if it exists."""

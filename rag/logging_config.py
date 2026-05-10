@@ -95,6 +95,24 @@ def configure_logging(
     root.handlers = [handler]
     root.setLevel(level)
 
+    # The indexer already emits its own structured Indexing line, so the
+    # Docling INFO output is signal-free noise. Keep WARNING and above so
+    # real issues surface.
+    logging.getLogger("docling").setLevel(logging.WARNING)
+
+    # Docling's Tesseract ERROR log is misleading noise that cannot be disabled
+    # via Docling options. Silence just that one logger, real CRITICAL events
+    # would still surface.
+    logging.getLogger("docling.models.stages.ocr.tesseract_ocr_model").setLevel(
+        logging.CRITICAL
+    )
+
+    # Docling logs the full PdfiumError traceback at ERROR for every
+    # password-protected (or otherwise unreadable) PDF before raising
+    # ConversionError. This is noisy and unhelpful, and the real error surfaces
+    # in the indexer's "Failed to parse" exception. Silence it.
+    logging.getLogger("docling.datamodel.document").setLevel(logging.CRITICAL)
+
 
 @contextmanager
 def bound_context(**fields: object) -> Iterator[None]:

@@ -27,7 +27,8 @@ class StoreError(RagError):
 
 
 class IndexingError(RagError):
-    """Raised when an indexing operation cannot proceed at all.
+    """
+    Raised when an indexing operation cannot proceed at all.
 
     Per-file failures during a batch run are counted in IndexSummary rather
     than raised. This type is reserved for failures that prevent the run

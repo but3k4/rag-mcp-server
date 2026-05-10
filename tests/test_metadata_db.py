@@ -105,9 +105,7 @@ class TestFindPathByHash:
         finally:
             db.close()
 
-    def test_returns_none_when_only_excluded_path_matches(
-        self, tmp_path: Path
-    ) -> None:
+    def test_returns_none_when_only_excluded_path_matches(self, tmp_path: Path) -> None:
         """The excluded path is filtered out even if its hash matches."""
 
         db = MetadataDB(tmp_path / "dup.db")

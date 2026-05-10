@@ -358,7 +358,8 @@ class TestClose:
 
 
 class TestChromaErrorHandling:
-    """Tests for typed propagation of ChromaDB errors.
+    """
+    Tests for typed propagation of ChromaDB errors.
 
     A silent-continue on store failure would produce duplicate or stale
     data in the index. These tests pin the contract: any ChromaError

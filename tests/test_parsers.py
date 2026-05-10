@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import sys
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
-import docx as _docx
-import openpyxl
-from pptx import Presentation
-from pptx.util import Inches
-from pypdf import PdfWriter
 import pytest
 
-from rag.parsers import SUPPORTED_EXTENSIONS, ParseError, chunk_file
+from rag.parsers import (
+    SUPPORTED_EXTENSIONS,
+    ParseError,
+    PasswordProtectedError,
+    chunk_file,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -105,174 +106,141 @@ class TestChunkTxt:
             chunk_file(f)
 
 
-class TestChunkPdf:
-    """Tests for PDF chunking."""
+class TestChunkWithDocling:
+    """
+    Tests for the unified Docling-based parser (PDF, DOCX, PPTX, XLSX).
 
-    def test_invalid_pdf_raises_parse_error(self, tmp_path: Path) -> None:
-        """A file with non-PDF bytes raises ParseError."""
+    Mocks the DocumentConverter at the module boundary so tests are fast
+    and independent of the actual Docling models.
+    """
 
-        f = tmp_path / "bad.pdf"
-        f.write_bytes(b"not a pdf at all")
-        with pytest.raises(ParseError, match="Cannot parse PDF"):
-            chunk_file(f)
+    def _install_mock_converter(
+        self, monkeypatch: pytest.MonkeyPatch, markdown: str
+    ) -> MagicMock:
+        """
+        Override the cached converter with a mock that returns markdown.
 
-    def test_valid_pdf_returns_list(self, tmp_path: Path) -> None:
-        """A valid blank-page PDF returns a list without raising."""
+        Setting an attribute on the _DoclingPipeline instance writes to
+        instance __dict__ and masks the cached_property descriptor, so
+        subsequent reads return the mock without ever building a real
+        DocumentConverter. monkeypatch reverts this after the test.
+        """
 
-        writer = PdfWriter()
-        writer.add_blank_page(width=200, height=200)
-        out = tmp_path / "blank.pdf"
-        with out.open("wb") as fh:
-            writer.write(fh)
-        result = chunk_file(out)
-        assert isinstance(result, list)
+        import rag.parsers as parsers_mod  # noqa: PLC0415
 
-    def test_pdf_with_text_uses_page_section(self, tmp_path: Path) -> None:
-        """A PDF with real text produces chunks labelled 'Page N'."""
+        converter = MagicMock(name="DocumentConverter")
+        document = MagicMock(name="DoclingDocument")
+        document.export_to_markdown.return_value = markdown
+        result = MagicMock(name="ConversionResult", document=document)
+        converter.convert.return_value = result
+        monkeypatch.setattr(parsers_mod._DOCLING_PIPELINE, "converter", converter)
+        return converter
 
-        # Build a PDF using reportlab-free path: use pypdf with a page cloned
-        # from a stream containing text. Simpler: use fpdf via raw bytes is
-        # overkill. Instead we write a minimal PDF with embedded text using
-        # pypdf's low-level API.
-        from pypdf.generic import DecodedStreamObject, NameObject  # noqa: PLC0415
+    @pytest.mark.parametrize("ext", [".pdf", ".docx", ".pptx", ".xlsx"])
+    def test_dispatches_each_format_to_docling(
+        self, ext: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All four structured formats route through Docling."""
 
-        writer = PdfWriter()
-        page = writer.add_blank_page(width=200, height=200)
-        content = DecodedStreamObject()
-        content.set_data(b"BT /F1 12 Tf 50 100 Td (Hello PDF text) Tj ET")
-        page[NameObject("/Contents")] = content
-        out = tmp_path / "text.pdf"
-        with out.open("wb") as fh:
-            writer.write(fh)
-        result = chunk_file(out)
-        # Even if extract_text fails on this minimal PDF, the code path is
-        # exercised. We only assert it returns a list.
-        assert isinstance(result, list)
+        converter = self._install_mock_converter(monkeypatch, "# Heading\n\nbody text")
+        f = tmp_path / f"doc{ext}"
+        f.write_bytes(b"placeholder")
+        result = chunk_file(f)
+        converter.convert.assert_called_once()
+        assert any("body text" in c["text"] for c in result)
 
-    def test_missing_pypdf_raises_parse_error(
+    def test_markdown_headings_become_sections(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If pypdf is not installed, PDF parsing raises ParseError."""
+        """ATX headers in Docling output are used as section labels."""
+
+        markdown = (
+            "# Introduction\n\n"
+            "intro body content here\n\n"
+            "## Details\n\n"
+            "details body content here\n"
+        )
+        self._install_mock_converter(monkeypatch, markdown)
+        f = tmp_path / "doc.pdf"
+        f.write_bytes(b"placeholder")
+        result = chunk_file(f)
+        sections = {c["section"] for c in result}
+        assert "# Introduction" in sections
+        assert "## Details" in sections
+
+    def test_conversion_error_wrapped_as_parse_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A docling ConversionError is wrapped as ParseError."""
+
+        from docling.exceptions import ConversionError  # noqa: PLC0415
+
+        import rag.parsers as parsers_mod  # noqa: PLC0415
+
+        converter = MagicMock(name="DocumentConverter")
+        converter.convert.side_effect = ConversionError("simulated")
+        monkeypatch.setattr(parsers_mod._DOCLING_PIPELINE, "converter", converter)
+        f = tmp_path / "bad.pdf"
+        f.write_bytes(b"placeholder")
+        with pytest.raises(ParseError, match="Cannot parse"):
+            chunk_file(f)
+
+    def test_password_protected_pdf_raises_password_protected_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        Password-protected PDFs surface as PasswordProtectedError.
+
+        Pre-check is performed by _is_pdf_password_protected before the
+        file is handed to Docling. Patching that helper lets us simulate
+        a password-protected PDF without crafting a real one.
+        """
+
+        import rag.parsers as parsers_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(parsers_mod, "_is_pdf_password_protected", lambda _: True)
+        f = tmp_path / "locked.pdf"
+        f.write_bytes(b"placeholder")
+        with pytest.raises(PasswordProtectedError, match="password-protected"):
+            chunk_file(f)
+
+    def test_pre_check_only_runs_for_pdf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-PDF (e.g. .docx) should not invoke the password pre-check."""
+
+        import rag.parsers as parsers_mod  # noqa: PLC0415
+
+        calls: list[Path] = []
+
+        def _spy(p: Path) -> bool:
+            calls.append(p)
+            return False
+
+        monkeypatch.setattr(parsers_mod, "_is_pdf_password_protected", _spy)
+        self._install_mock_converter(monkeypatch, "# H\n\nbody")
+        f = tmp_path / "doc.docx"
+        f.write_bytes(b"placeholder")
+        chunk_file(f)
+        assert calls == []
+
+    def test_missing_docling_raises_parse_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If docling is not installed, parsing raises ParseError."""
+
+        import rag.parsers as parsers_mod  # noqa: PLC0415
 
         f = tmp_path / "x.pdf"
-        f.write_bytes(b"%PDF-1.4")
-        monkeypatch.setitem(sys.modules, "pypdf", None)
-        with pytest.raises(ParseError, match="pypdf is not installed"):
-            chunk_file(f)
-
-
-class TestChunkDocx:
-    """Tests for Word document chunking."""
-
-    def _make_docx(self, tmp_path: Path, text: str) -> Path:
-        """Write a minimal .docx containing a single paragraph and return its path."""
-
-        doc = _docx.Document()
-        doc.add_paragraph(text)
-        out = tmp_path / "doc.docx"
-        doc.save(str(out))
-        return out
-
-    def test_docx_contains_paragraph_text(self, tmp_path: Path) -> None:
-        """Paragraph text appears in chunk text."""
-
-        f = self._make_docx(tmp_path, "Test paragraph content")
-        result = chunk_file(f)
-        assert any("Test paragraph content" in c["text"] for c in result)
-
-    def test_invalid_docx_raises_parse_error(self, tmp_path: Path) -> None:
-        """Non-docx bytes raise ParseError."""
-
-        f = tmp_path / "bad.docx"
-        f.write_bytes(b"definitely not a docx")
-        with pytest.raises(ParseError, match="Cannot parse DOCX"):
-            chunk_file(f)
-
-    def test_docx_heading_flushes_buffered_body(self, tmp_path: Path) -> None:
-        """Body paragraphs are flushed into a section when a heading appears."""
-
-        doc = _docx.Document()
-        doc.add_paragraph("First body line")
-        doc.add_paragraph("Second body line")
-        doc.add_heading("Chapter two", level=1)
-        doc.add_paragraph("Body under chapter two")
-        out = tmp_path / "sections.docx"
-        doc.save(str(out))
-        result = chunk_file(out)
-        sections = {c["section"] for c in result}
-        assert "Chapter two" in sections
-
-    def test_missing_docx_package_raises_parse_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """If python-docx is not installed, DOCX parsing raises ParseError."""
-
-        f = tmp_path / "x.docx"
-        f.write_bytes(b"PK")
-        monkeypatch.setitem(sys.modules, "docx", None)
-        with pytest.raises(ParseError, match="python-docx is not installed"):
-            chunk_file(f)
-
-
-class TestChunkPptx:
-    """Tests for PowerPoint chunking."""
-
-    def _make_pptx(self, tmp_path: Path, slide_text: str) -> Path:
-        """Write a minimal .pptx with one textbox on a blank slide and return its path."""
-
-        prs = Presentation()
-        slide_layout = prs.slide_layouts[5]  # blank layout
-        slide = prs.slides.add_slide(slide_layout)
-        txBox = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
-        txBox.text_frame.text = slide_text
-        out = tmp_path / "pres.pptx"
-        prs.save(str(out))
-        return out
-
-    def test_pptx_contains_slide_text(self, tmp_path: Path) -> None:
-        """Text from slide shapes appears in chunk text."""
-
-        f = self._make_pptx(tmp_path, "Slide one content")
-        result = chunk_file(f)
-        assert any("Slide one content" in c["text"] for c in result)
-
-    def test_invalid_pptx_raises_parse_error(self, tmp_path: Path) -> None:
-        """Non-pptx bytes raise ParseError."""
-
-        f = tmp_path / "bad.pptx"
-        f.write_bytes(b"garbage bytes")
-        with pytest.raises(ParseError, match="Cannot parse PPTX"):
-            chunk_file(f)
-
-    def test_pptx_skips_shapes_without_text_frame(self, tmp_path: Path) -> None:
-        """Shapes with no text frame (e.g. pictures, lines) are skipped."""
-
-        prs = Presentation()
-        slide_layout = prs.slide_layouts[5]
-        slide = prs.slides.add_slide(slide_layout)
-        # Add a connector shape (line) which has no text frame.
-        from pptx.enum.shapes import MSO_CONNECTOR  # noqa: PLC0415
-
-        slide.shapes.add_connector(
-            MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(3), Inches(3)
+        f.write_bytes(b"placeholder")
+        monkeypatch.setitem(sys.modules, "docling.exceptions", None)
+        # Replace the singleton so any cached converter from a prior test
+        # is dropped; the missing-import check fires before the pipeline
+        # is consulted, but a fresh instance keeps the test airtight.
+        monkeypatch.setattr(
+            parsers_mod, "_DOCLING_PIPELINE", parsers_mod._DoclingPipeline()
         )
-        # Also add a real text box so the slide produces a chunk.
-        tx = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(4), Inches(1))
-        tx.text_frame.text = "Slide content here"
-        out = tmp_path / "mixed.pptx"
-        prs.save(str(out))
-        result = chunk_file(out)
-        assert any("Slide content here" in c["text"] for c in result)
-
-    def test_missing_pptx_package_raises_parse_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """If python-pptx is not installed, PPTX parsing raises ParseError."""
-
-        f = tmp_path / "x.pptx"
-        f.write_bytes(b"PK")
-        monkeypatch.setitem(sys.modules, "pptx", None)
-        with pytest.raises(ParseError, match="python-pptx is not installed"):
+        with pytest.raises(ParseError, match="docling is not installed"):
             chunk_file(f)
 
 
@@ -321,49 +289,6 @@ class TestChunkCsv:
 
         monkeypatch.setattr(_csv, "reader", _boom)
         with pytest.raises(ParseError, match="Cannot parse CSV"):
-            chunk_file(f)
-
-
-class TestChunkXlsx:
-    """Tests for Excel workbook chunking."""
-
-    def _make_xlsx(self, tmp_path: Path, rows: list[list[str]]) -> Path:
-        """Write a minimal .xlsx containing the given rows and return its path."""
-
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        for row in rows:
-            ws.append(row)
-        out = tmp_path / "data.xlsx"
-        wb.save(str(out))
-        return out
-
-    def test_xlsx_rows_in_chunk_text(self, tmp_path: Path) -> None:
-        """Each row across all sheets is present in chunk text."""
-
-        f = self._make_xlsx(tmp_path, [["name", "value"], ["foo", "42"]])
-        result = chunk_file(f)
-        all_text = " ".join(c["text"] for c in result)
-        assert "name | value" in all_text
-        assert "foo | 42" in all_text
-
-    def test_invalid_xlsx_raises_parse_error(self, tmp_path: Path) -> None:
-        """Non-xlsx bytes raise ParseError."""
-
-        f = tmp_path / "bad.xlsx"
-        f.write_bytes(b"not xlsx data")
-        with pytest.raises(ParseError, match="Cannot parse XLSX"):
-            chunk_file(f)
-
-    def test_missing_openpyxl_raises_parse_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """If openpyxl is not installed, XLSX parsing raises ParseError."""
-
-        f = tmp_path / "x.xlsx"
-        f.write_bytes(b"PK")
-        monkeypatch.setitem(sys.modules, "openpyxl", None)
-        with pytest.raises(ParseError, match="openpyxl is not installed"):
             chunk_file(f)
 
 

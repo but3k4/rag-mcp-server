@@ -70,9 +70,7 @@ class MetadataDB:
 
         # check_same_thread=False lets the MCP server's thread-pool workers
         # (used by asyncio.to_thread) share this connection with the main
-        # thread and the watchdog observer thread. We serialise operations
-        # with _lock so interleaved reads/writes don't corrupt the
-        # connection's internal state.
+        # thread and the watchdog observer thread.
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._lock = threading.RLock()
         with self._lock:
@@ -194,6 +192,25 @@ class MetadataDB:
                 "INSERT INTO kv(key, value) VALUES('model', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (name,),
+            )
+
+    def get_parser_version(self) -> str | None:
+        """Return the stored parser pipeline version, or None if never set."""
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM kv WHERE key = 'parser_version'"
+            ).fetchone()
+        return row[0] if row else None
+
+    def set_parser_version(self, version: str) -> None:
+        """Store (or overwrite) the parser pipeline version."""
+
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO kv(key, value) VALUES('parser_version', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (version,),
             )
 
     def set_file_hash(self, path: str, file_hash: str) -> None:

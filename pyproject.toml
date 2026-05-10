@@ -9,17 +9,23 @@ dependencies = [
     "mcp[cli]>=1.6.0",
     "chromadb>=0.6.0",
     "sentence-transformers>=3.0.0",
-    # torch is pulled in transitively by sentence-transformers but listed
-    # explicitly here so [tool.uv.sources] can redirect it to the CPU-only
-    # wheel on Linux. See the [tool.uv.sources] block below.
+    # torch and torchvision are pulled in transitively by sentence-transformers
+    # and docling but listed explicitly here so [tool.uv.sources] can redirect
+    # both to the CPU-only wheel on Linux. See the [tool.uv.sources] block below.
     "torch>=2.0.0",
+    "torchvision>=0.18.0",
     "rank-bm25>=0.2.2",
     "numpy>=1.26.0",
-    "pypdf>=4.0.0",
-    "python-docx>=1.1.0",
-    "python-pptx>=1.0.0",
-    "openpyxl>=3.1.0",
-    "pandas>=2.2.0",
+    # Single document parser for PDF/DOCX/PPTX/XLSX. Replaces
+    # pypdf+python-docx+python-pptx+openpyxl with one ML-backed pipeline
+    # that preserves structure (headings, tables) as markdown.
+    "docling-slim[standard]>=2.0.0",
+    "opencv-python-headless>=4.10.0",
+    # Tesseract OCR (HP/Google, Apache-2). Auto-detected by Docling at
+    # pipeline init when the package is importable, so installing it
+    # turns "No OCR engine found" into working OCR for scanned-image
+    # pages with no code change.
+    "tesserocr>=2.7.1",
     "watchdog>=4.0.0",
     "lxml>=5.0.0",
     "structlog>=24.1.0",
@@ -33,7 +39,6 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.10.0",
     "bandit>=1.7.0",
-    "pandas-stubs>=2.0.0",
     "types-lxml>=2024.0.0",
 ]
 
@@ -68,15 +73,19 @@ ignore_missing_imports = true
 
 # Pin torch to the PyTorch CPU wheel on Linux. This avoids pulling in the
 # ~2 GB of nvidia-cuda-* wheels that ship with the default Linux torch
-# distribution. The Docker container runs CPU-only anyway (no nvidia-docker
-# runtime / GPU passthrough assumed), so the CUDA stack is dead weight.
-#
-# macOS is left on the standard wheel so local development keeps MPS
-# (Metal) acceleration on Apple Silicon. To enable CUDA on a real GPU
-# host, drop the `platform_system == 'Linux'` marker (or switch the index
-# to pytorch-cu121 / etc.) and regenerate the lockfile.
+# distribution.
+[tool.uv]
+# Exclude rapidocr from the resolution. docling-slim[standard] requires
+# it for OCR support, but rapidocr is a Chinese-origin project that
+# downloads its PP-OCRv4 weights from modelscope.cn (Alibaba's hub) at
+# import / first-use.
+override-dependencies = [
+    "rapidocr ; sys_platform == 'never'",
+]
+
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
