@@ -4,7 +4,23 @@
     "relevant": ["corpus/python_basics.md"]
   },
   {
+    "query": "python dictionary safe key lookup with a default",
+    "relevant": ["corpus/python_basics.md"]
+  },
+  {
+    "query": "when to use a generator expression instead of a list comprehension",
+    "relevant": ["corpus/python_basics.md"]
+  },
+  {
     "query": "how to merge two git branches",
+    "relevant": ["corpus/git_basics.md"]
+  },
+  {
+    "query": "how to undo a published git commit safely",
+    "relevant": ["corpus/git_basics.md"]
+  },
+  {
+    "query": "what does git revert do",
     "relevant": ["corpus/git_basics.md"]
   },
   {
@@ -12,11 +28,103 @@
     "relevant": ["corpus/docker_intro.md"]
   },
   {
-    "query": "how to undo a published git commit safely",
-    "relevant": ["corpus/git_basics.md"]
-  },
-  {
     "query": "how do containers persist data across restarts",
     "relevant": ["corpus/docker_intro.md"]
+  },
+  {
+    "query": "publish a container port to the host",
+    "relevant": ["corpus/docker_intro.md"]
+  },
+  {
+    "query": "configure nginx as a reverse proxy",
+    "relevant": ["corpus/nginx_basics.md"]
+  },
+  {
+    "query": "terminate TLS on nginx with a certificate and private key",
+    "relevant": ["corpus/nginx_basics.md"]
+  },
+  {
+    "query": "difference between redis RDB and AOF persistence",
+    "relevant": ["corpus/redis_basics.md"]
+  },
+  {
+    "query": "redis pub sub versus streams for at-least-once delivery",
+    "relevant": ["corpus/redis_basics.md"]
+  },
+  {
+    "query": "why is autovacuum important in postgres",
+    "relevant": ["corpus/postgresql_basics.md"]
+  },
+  {
+    "query": "postgres isolation levels and read committed",
+    "relevant": ["corpus/postgresql_basics.md"]
+  },
+  {
+    "query": "when to add a secondary index in postgres",
+    "relevant": ["corpus/postgresql_basics.md"]
+  },
+  {
+    "query": "what is /etc used for on linux",
+    "relevant": ["corpus/linux_filesystem.md"]
+  },
+  {
+    "query": "change file permissions with chmod",
+    "relevant": ["corpus/linux_filesystem.md"]
+  },
+  {
+    "query": "persistent mount entries in fstab",
+    "relevant": ["corpus/linux_filesystem.md"]
+  },
+  {
+    "query": "quote variables in bash to handle spaces",
+    "relevant": ["corpus/bash_scripting.md"]
+  },
+  {
+    "query": "merge stderr into stdout in bash",
+    "relevant": ["corpus/bash_scripting.md"]
+  },
+  {
+    "query": "abort a bash script on the first error",
+    "relevant": ["corpus/bash_scripting.md"]
+  },
+  {
+    "query": "set up ssh key authentication",
+    "relevant": ["corpus/ssh_basics.md"]
+  },
+  {
+    "query": "ssh local port forwarding example",
+    "relevant": ["corpus/ssh_basics.md"]
+  },
+  {
+    "query": "create a systemd unit file for a service",
+    "relevant": ["corpus/systemd_services.md"]
+  },
+  {
+    "query": "view logs for a systemd service",
+    "relevant": ["corpus/systemd_services.md"]
+  },
+  {
+    "query": "difference between a pod and a deployment in kubernetes",
+    "relevant": ["corpus/kubernetes_pods.md"]
+  },
+  {
+    "query": "mount a configmap into a kubernetes pod",
+    "relevant": ["corpus/kubernetes_pods.md"]
+  },
+  {
+    "query": "what does a terraform provider block do",
+    "relevant": ["corpus/terraform_basics.md"]
+  },
+  {
+    "query": "store terraform state remotely with locking",
+    "relevant": ["corpus/terraform_basics.md"]
+  },
+  {
+    "query": "which http methods are idempotent",
+    "relevant": ["corpus/http_basics.md"]
+  },
+  {
+    "query": "what does 304 Not Modified mean",
+    "relevant": ["corpus/http_basics.md"]
   }
 ]
